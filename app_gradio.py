@@ -8,6 +8,7 @@ from torch.nn import functional as F
 import shutil
 import subprocess
 import datetime
+import math # For ceiling function
 # import time # time was imported but not used directly, datetime covers timestamps
 
 # --- Configuration & Model Loading ---
@@ -15,6 +16,7 @@ MODEL_DIR = 'train_log'
 TEMP_IMAGE_DIR_PARENT = "temp_gradio_frames" # Parent for temporary frame storage for interpolation
 TEMP_VIDEO_DIR = "temp_gradio_videos"       # Temporary video storage for interpolation output
 TEMP_CHAINED_OP_DIR = "temp_chained_operations"
+DEFAULT_FPS = 24 # Define a default FPS value
 
 # Ensure base temporary directories exist
 os.makedirs(TEMP_IMAGE_DIR_PARENT, exist_ok=True)
@@ -254,10 +256,34 @@ def create_standard_interpolated_video(img0_pil, img1_pil, exp_value, fps):
     return output_video_path, "Standard interpolation successful."
 
 # --- Chained Interpolation (for UI Tab 3) ---
+def get_middle_video_info(middle_video_path):
+    if middle_video_path is None:
+        return "Middle video not loaded.", gr.update(value=DEFAULT_FPS) # Reset FPS input to default
+    try:
+        cap = cv2.VideoCapture(middle_video_path)
+        if not cap.isOpened():
+            return "Error: Cannot open middle video.", gr.update(value=DEFAULT_FPS)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        
+        if fps > 0 and total_frames > 0:
+            fps_display_val = round(fps) if fps >= 1 else round(fps, 2) # Use int for common FPS values
+            info_text = f"Middle Video: {total_frames} frames, {fps:.2f} FPS, {width}x{height}."
+            return info_text, gr.update(value=fps_display_val)
+        else:
+            info_text = f"Middle Video: Error reading properties (FPS: {fps:.2f}, Frames: {total_frames}). Using default FPS."
+            return info_text, gr.update(value=DEFAULT_FPS)
+    except Exception as e:
+        return f"Error reading middle video: {str(e)}", gr.update(value=DEFAULT_FPS)
+
 def create_chained_interpolated_video(anchor_img_pil, middle_video_path, exp_value, interp_duration_seconds, main_video_final_fps):
     if anchor_img_pil is None: raise gr.Error("Anchor Image required.")
     if middle_video_path is None: raise gr.Error("Middle Video required.")
     if interp_duration_seconds <= 0: raise gr.Error("Interpolation duration must be positive.")
+    if main_video_final_fps <= 0: raise gr.Error("Final FPS must be positive.") # Added check
     model = get_model()
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     operation_dir = os.path.join(TEMP_CHAINED_OP_DIR, f"chained_{timestamp}") # Unique parent for this whole operation
@@ -278,6 +304,7 @@ def create_chained_interpolated_video(anchor_img_pil, middle_video_path, exp_val
         target_w = int(cap_middle_info.get(cv2.CAP_PROP_FRAME_WIDTH))
         target_h = int(cap_middle_info.get(cv2.CAP_PROP_FRAME_HEIGHT))
         middle_total_frames = int(cap_middle_info.get(cv2.CAP_PROP_FRAME_COUNT))
+        middle_original_fps = cap_middle_info.get(cv2.CAP_PROP_FPS) # Get original FPS
         cap_middle_info.release()
         if target_w == 0 or target_h == 0 or middle_total_frames == 0: raise gr.Error("Middle video has invalid dimensions or zero frames.")
 
@@ -318,8 +345,9 @@ def create_chained_interpolated_video(anchor_img_pil, middle_video_path, exp_val
 
         # 4. Calculate Interpolation Segment FPS
         num_frames_per_interp_segment = (2**exp_value) + 1
-        interp_segment_fps = num_frames_per_interp_segment / interp_duration_seconds
+        interp_segment_fps = math.ceil(num_frames_per_interp_segment / interp_duration_seconds * 100) / 100.0 # Keep 2 decimal places, ensure > 0
         if interp_segment_fps < 1: print(f"Warning: Calculated interpolation FPS is {interp_segment_fps:.2f}, may result in slow motion.")
+        interp_segment_fps = max(interp_segment_fps, 0.1) # Ensure FPS is at least 0.1 to avoid issues
 
         # 5. Interpolation 1 (Scaled Anchor -> Scaled Vid First)
         success, msg, _, _ = _generate_and_save_interpolated_frames(
@@ -478,7 +506,7 @@ with gr.Blocks(title="RIFE Video and Image Interpolation", theme=gr.themes.Soft(
                 middle_video_chained = gr.Video(label="Middle Video")
             exp_chained_interp = gr.Slider(minimum=1, maximum=5, value=2, step=1, label="Interpolation Factor (exp for both sides)")
             interp_duration_chained = gr.Number(value=2.0, minimum=0.1, label="Interpolation Segment Duration (seconds)", info="Duration for 'Anchor to Video Start' and 'Video End to Anchor' parts.")
-            main_video_fps_chained = gr.Number(value=24, label="Main Video & Final Output FPS", minimum=1, step=1)
+            main_video_fps_chained = gr.Number(value=DEFAULT_FPS, label="Main Video & Final Output FPS", minimum=1, step=1)
             btn_run_chained_interp = gr.Button("Generate Chained Interpolated Video", variant="primary")
             vid_output_chained_interp = gr.Video(label="Chained Output Video")
             status_chained_interp = gr.Textbox(label="Status", interactive=False, show_label=False)
