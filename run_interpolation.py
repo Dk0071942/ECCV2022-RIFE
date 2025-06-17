@@ -39,10 +39,14 @@ def cv2_frame_reader(video_path):
 
 def _run_ffmpeg_command(command, operation_dir_to_clean=None):
     try:
-        print(f"FFmpeg CMD: {' '.join(command)}")
-        process = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
-        if process.stdout: print(f"FFmpeg STDOUT: {process.stdout.strip()}")
-        if process.stderr: print(f"FFmpeg STDERR: {process.stderr.strip()}")
+        # Add -loglevel error to suppress all but the most critical messages.
+        # The command is copied to avoid modifying the original list.
+        ffmpeg_command = command[:1] + ['-loglevel', 'error'] + command[1:]
+        
+        # The command print is removed for a cleaner log. For debugging, uncomment the line below.
+        # print(f"FFmpeg CMD: {' '.join(ffmpeg_command)}")
+        process = subprocess.run(ffmpeg_command, check=True, capture_output=True, text=True, encoding='utf-8')
+        # stdout/stderr printing on success is removed for cleaner logs.
         return True, "FFmpeg command successful."
     except subprocess.CalledProcessError as e:
         err_msg = f"FFmpeg Error (code {e.returncode}): {e.stderr.strip() if e.stderr else 'Unknown FFmpeg error.'}"
@@ -61,59 +65,61 @@ def _run_ffmpeg_command(command, operation_dir_to_clean=None):
             shutil.rmtree(operation_dir_to_clean)
         return False, err_msg
 
-def _transfer_audio_ffmpeg(source_video_path, target_video_path, operation_dir_for_cleanup=None):
+def _transfer_audio_ffmpeg(source_video_path: str, target_video_path: str, operation_dir_for_cleanup: str = None):
     # This function remains largely the same as in your original implementation.
-    temp_audio_file = os.path.join(operation_dir_for_cleanup or ".", "temp_audio_for_transfer.mkv")
-    target_video_no_audio = os.path.join(operation_dir_for_cleanup or ".", "target_no_audio.mp4")
-    
-    if operation_dir_for_cleanup and not os.path.exists(operation_dir_for_cleanup):
-        os.makedirs(operation_dir_for_cleanup, exist_ok=True)
+    op_dir = Path(operation_dir_for_cleanup or Path.cwd())
+    op_dir.mkdir(exist_ok=True)
 
-    cmd_extract_audio = ['ffmpeg', '-y', '-i', source_video_path, '-c:a', 'copy', '-vn', temp_audio_file]
-    success_extract, msg_extract = _run_ffmpeg_command(cmd_extract_audio, None)
+    temp_audio_file = op_dir / "temp_audio_for_transfer.mkv"
+    target_video_no_audio = op_dir / "target_no_audio.mp4"
+
+    cmd_extract_audio = ['ffmpeg', '-y', '-i', str(source_video_path), '-c:a', 'copy', '-vn', str(temp_audio_file)]
+    success_extract, msg_extract = _run_ffmpeg_command(cmd_extract_audio, str(op_dir))
     if not success_extract:
-        if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+        if temp_audio_file.exists(): temp_audio_file.unlink()
         return False, f"Audio extraction failed: {msg_extract}. Output video will have no audio."
 
     try:
-        if os.path.exists(target_video_path):
-            shutil.move(target_video_path, target_video_no_audio)
+        target_video_path_obj = Path(target_video_path)
+        if target_video_path_obj.exists():
+            target_video_path_obj.rename(target_video_no_audio)
         else:
-            if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+            if temp_audio_file.exists(): temp_audio_file.unlink()
             return False, "Target video for audio merge not found."
     except Exception as e:
-        if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+        if temp_audio_file.exists(): temp_audio_file.unlink()
         return False, f"Failed to rename target video for audio merge: {str(e)}"
 
-    cmd_merge_audio = ['ffmpeg', '-y', '-i', target_video_no_audio, '-i', temp_audio_file, '-c', 'copy', target_video_path]
-    success_merge, msg_merge = _run_ffmpeg_command(cmd_merge_audio, None)
+    cmd_merge_audio = ['ffmpeg', '-y', '-i', str(target_video_no_audio), '-i', str(temp_audio_file), '-c', 'copy', str(target_video_path)]
+    success_merge, msg_merge = _run_ffmpeg_command(cmd_merge_audio, str(op_dir))
 
-    if not success_merge or (os.path.exists(target_video_path) and os.path.getsize(target_video_path) == 0):
+    target_video_path_obj = Path(target_video_path)
+    if not success_merge or (target_video_path_obj.exists() and target_video_path_obj.stat().st_size == 0):
         print(f"Lossless audio transfer failed ({msg_merge}). Retrying with AAC transcode...")
-        temp_audio_file_aac = os.path.join(operation_dir_for_cleanup or ".", "temp_audio_for_transfer.m4a")
-        cmd_transcode_audio = ['ffmpeg', '-y', '-i', source_video_path, '-c:a', 'aac', '-b:a', '160k', '-vn', temp_audio_file_aac]
-        success_transcode, msg_transcode = _run_ffmpeg_command(cmd_transcode_audio, None)
+        temp_audio_file_aac = op_dir / "temp_audio_for_transfer.m4a"
+        cmd_transcode_audio = ['ffmpeg', '-y', '-i', str(source_video_path), '-c:a', 'aac', '-b:a', '160k', '-vn', str(temp_audio_file_aac)]
+        success_transcode, msg_transcode = _run_ffmpeg_command(cmd_transcode_audio, str(op_dir))
 
         if success_transcode:
-            cmd_merge_aac = ['ffmpeg', '-y', '-i', target_video_no_audio, '-i', temp_audio_file_aac, '-c', 'copy', target_video_path]
-            success_merge_aac, msg_merge_aac = _run_ffmpeg_command(cmd_merge_aac, None)
-            if os.path.exists(temp_audio_file_aac): os.remove(temp_audio_file_aac)
+            cmd_merge_aac = ['ffmpeg', '-y', '-i', str(target_video_no_audio), '-i', str(temp_audio_file_aac), '-c', 'copy', str(target_video_path)]
+            success_merge_aac, msg_merge_aac = _run_ffmpeg_command(cmd_merge_aac, str(op_dir))
+            if temp_audio_file_aac.exists(): temp_audio_file_aac.unlink()
             
-            if success_merge_aac and os.path.exists(target_video_path) and os.path.getsize(target_video_path) > 0:
-                if os.path.exists(target_video_no_audio): os.remove(target_video_no_audio)
-                if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+            if success_merge_aac and target_video_path_obj.exists() and target_video_path_obj.stat().st_size > 0:
+                if target_video_no_audio.exists(): target_video_no_audio.unlink()
+                if temp_audio_file.exists(): temp_audio_file.unlink()
                 return True, "Audio transferred with AAC transcode."
             else:
-                shutil.move(target_video_no_audio, target_video_path)
-                if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+                target_video_no_audio.rename(target_video_path)
+                if temp_audio_file.exists(): temp_audio_file.unlink()
                 return False, f"AAC audio merge also failed ({msg_merge_aac})."
         else:
-            shutil.move(target_video_no_audio, target_video_path)
-            if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+            target_video_no_audio.rename(target_video_path)
+            if temp_audio_file.exists(): temp_audio_file.unlink()
             return False, f"Audio transcode to AAC failed ({msg_transcode})."
     else:
-        if os.path.exists(target_video_no_audio): os.remove(target_video_no_audio)
-        if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+        if target_video_no_audio.exists(): target_video_no_audio.unlink()
+        if temp_audio_file.exists(): temp_audio_file.unlink()
         return True, "Audio transferred successfully (lossless)."
 
 def get_rife_model():
