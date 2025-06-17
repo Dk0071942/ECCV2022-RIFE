@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import datetime
 import math # For ceiling function
+import skvideo.io
+from tqdm import tqdm
 # import time # time was imported but not used directly, datetime covers timestamps
 
 # --- Configuration & Model Loading ---
@@ -127,6 +129,330 @@ def _generate_and_save_interpolated_frames(img0_pil, img1_pil, exp_value, target
         return True, "Frames generated successfully.", saved_frame_paths, (w_orig, h_orig)
     except Exception as e:
         return False, f"Frame saving error: {str(e)}", None, (w_orig,h_orig)
+
+# --- Video Frame Interpolation Helpers (for UI Tab 4) ---
+def _pad_image_for_video_interpolation(img_tensor, model_scale_factor, fp16_active):
+    """Pads an image tensor to be compatible with RIFE model inference dimensions."""
+    _n, _c, h_orig, w_orig = img_tensor.shape
+    # RIFE model requires dimensions to be multiples of a value (e.g., 32), 
+    # adjusted by the model_scale_factor.
+    # This tmp calculation is based on inference_video.py (tmp = max(32, int(32 / args.scale)))
+    # Here, model_scale_factor corresponds to args.scale in inference_video.py
+    tmp = max(32, int(32 / model_scale_factor)) 
+    ph = ((h_orig - 1) // tmp + 1) * tmp
+    pw = ((w_orig - 1) // tmp + 1) * tmp
+    padding = (0, pw - w_orig, 0, ph - h_orig)
+    
+    padded_tensor = F.pad(img_tensor, padding)
+    if fp16_active:
+        return padded_tensor.half()
+    return padded_tensor
+
+def _make_inference_for_video_interpolation(I0, I1, n_exp, model_instance, model_scale_factor_for_inference):
+    """
+    Recursively generates n intermediate frames between I0 and I1.
+    n_exp: exponent for 2**n_exp-1 total intermediate frames. (e.g. exp=1 -> 1 mid frame, exp=2 -> 3 mid frames)
+    model_scale_factor_for_inference: Corresponds to args.scale for model.inference()
+    """
+    if n_exp == 0: # Base case for 2**0 -1 = 0, means no *intermediate* frames, direct from I0 to I1 in sequence.
+        return []
+    
+    # The model's inference function might take a scale argument.
+    # Based on inference_video.py: model.inference(I0, I1, args.scale)
+    # Here, model_scale_factor_for_inference is that args.scale
+    middle = model_instance.inference(I0, I1, scale=model_scale_factor_for_inference)
+    
+    if n_exp == 1: # (2**1 - 1) = 1 middle frame
+        return [middle]
+
+    # Recursive calls:
+    # For n_exp=2: n=3 intermediate frames. We need make_inference(I0, middle, 1) and make_inference(middle, I1, 1)
+    # The 'n' in the original RIFE inference_video.py's make_inference seems to be the *number of interpolations to make in this half*
+    # If total_interpolations = 2**n_exp -1.
+    # If n_exp = 2, total_interpolations = 3.  middle is one. Need 1 for first_half, 1 for second_half. So n_exp_for_half = 1.
+    # If n_exp = 3, total_interpolations = 7. middle is one. Need 3 for first_half, 3 for second_half. So n_exp_for_half = 2.
+    # This implies the recursive call should use n_exp-1 for each half, which matches the structure.
+
+    # The number of intermediate frames to generate in each sub-problem is (2**(n_exp-1) - 1).
+    # So, the 'n' argument to the recursive call should be n_exp-1.
+    
+    first_half = _make_inference_for_video_interpolation(I0, middle, n_exp - 1, model_instance, model_scale_factor_for_inference)
+    second_half = _make_inference_for_video_interpolation(middle, I1, n_exp - 1, model_instance, model_scale_factor_for_inference)
+    
+    return [*first_half, middle, *second_half]
+
+
+def _transfer_audio_ffmpeg(source_video_path, target_video_path, operation_dir_for_cleanup=None):
+    """Transfers audio from source_video to target_video using FFmpeg."""
+    temp_audio_file = os.path.join(operation_dir_for_cleanup or ".", "temp_audio_for_transfer.mkv")
+    target_video_no_audio = os.path.join(operation_dir_for_cleanup or ".", "target_no_audio.mp4")
+    
+    # Create operation_dir if it's provided and doesn't exist (though usually it should for cleanup)
+    if operation_dir_for_cleanup and not os.path.exists(operation_dir_for_cleanup):
+        os.makedirs(operation_dir_for_cleanup, exist_ok=True)
+
+    # 1. Extract audio from source
+    cmd_extract_audio = ['ffmpeg', '-y', '-i', source_video_path, '-c:a', 'copy', '-vn', temp_audio_file]
+    success_extract, msg_extract = _run_ffmpeg_command(cmd_extract_audio, None) # Don't clean full op_dir on this sub-step failure
+    if not success_extract:
+        # Try to remove partial temp files if they exist
+        if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+        return False, f"Audio extraction failed: {msg_extract}. Output video will have no audio."
+
+    # Rename target to temp name (target_video_no_audio)
+    try:
+        if os.path.exists(target_video_path):
+            shutil.move(target_video_path, target_video_no_audio)
+        else: # Target video (presumably just video frames, no audio muxed yet) wasn't found.
+              # This could happen if the video generation step itself failed.
+              # The calling function should handle this case (i.e. if targetVideo doesn't exist after video generation)
+            if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+            return False, "Target video for audio merge not found. Original target may have failed to generate."
+    except Exception as e:
+        if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+        return False, f"Failed to rename target video for audio merge: {str(e)}"
+
+    # 2. Merge audio with (renamed) target video
+    cmd_merge_audio = ['ffmpeg', '-y', '-i', target_video_no_audio, '-i', temp_audio_file, '-c', 'copy', target_video_path]
+    success_merge, msg_merge = _run_ffmpeg_command(cmd_merge_audio, None)
+
+    if not success_merge or os.path.getsize(target_video_path) == 0:
+        # If direct copy fails, try transcoding audio to AAC (common fallback)
+        print(f"Lossless audio transfer failed ({msg_merge}). Retrying with AAC transcode...")
+        temp_audio_file_aac = os.path.join(operation_dir_for_cleanup or ".", "temp_audio_for_transfer.m4a")
+        cmd_transcode_audio = ['ffmpeg', '-y', '-i', source_video_path, '-c:a', 'aac', '-b:a', '160k', '-vn', temp_audio_file_aac]
+        success_transcode, msg_transcode = _run_ffmpeg_command(cmd_transcode_audio, None)
+
+        if success_transcode:
+            cmd_merge_aac = ['ffmpeg', '-y', '-i', target_video_no_audio, '-i', temp_audio_file_aac, '-c', 'copy', target_video_path]
+            success_merge_aac, msg_merge_aac = _run_ffmpeg_command(cmd_merge_aac, None)
+            if os.path.exists(temp_audio_file_aac): os.remove(temp_audio_file_aac) # Clean AAC temp
+            
+            if success_merge_aac and os.path.getsize(target_video_path) > 0:
+                if os.path.exists(target_video_no_audio): os.remove(target_video_no_audio)
+                if os.path.exists(temp_audio_file): os.remove(temp_audio_file) # Clean original mkv temp
+                return True, "Audio transferred with AAC transcode."
+            else:
+                # AAC merge failed, restore original video (no audio)
+                shutil.move(target_video_no_audio, target_video_path)
+                if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+                return False, f"AAC audio merge also failed ({msg_merge_aac}). Output video will have no audio."
+        else:
+            # Transcoding to AAC failed, restore original video (no audio)
+            shutil.move(target_video_no_audio, target_video_path)
+            if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+            return False, f"Audio transcode to AAC failed ({msg_transcode}). Output video will have no audio."
+    else:
+        # Lossless merge was successful
+        if os.path.exists(target_video_no_audio): os.remove(target_video_no_audio)
+        if os.path.exists(temp_audio_file): os.remove(temp_audio_file)
+        return True, "Audio transferred successfully (lossless)."
+
+# --- Main Video FPS Interpolation Function (for UI Tab 4) ---
+def interpolate_uploaded_video(
+    input_video_path, 
+    interpolation_exp, # exponent for 2**exp, e.g., 2 means 4x frame count (1 original + 3 interpolated)
+    model_inference_scale_factor, # Corresponds to --scale in inference_video.py (for model.inference call)
+    output_resolution_scale_factor, # Multiplier for output video width/height
+    target_fps_override, # Optional: target FPS for the output video
+    use_fp16, # Boolean for FP16 inference
+    progress=gr.Progress(track_tqdm=True)
+):
+    if not input_video_path:
+        raise gr.Error("Input video not provided.")
+    model = get_model()
+    if use_fp16 and not torch.cuda.is_available():
+        raise gr.Error("FP16 is selected, but CUDA is not available. Uncheck FP16 or ensure CUDA is set up.")
+    
+    original_torch_dtype = torch.get_default_dtype()
+    operation_dir = None # Initialize to handle potential errors before assignment
+    final_output_video_path = None # Initialize
+
+    try:
+        if use_fp16 and torch.cuda.is_available():
+            torch.set_default_dtype(torch.float16)
+        elif use_fp16 and not torch.cuda.is_available(): # Should have been caught by the check above
+            print("Warning: FP16 selected but CUDA not available. Using float32 for model and tensors.")
+            # Model remains float32, default dtype remains original (likely float32)
+        # If not use_fp16, model is float32 and default dtype is original
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        # Parent directory for this specific operation, to be cleaned up
+        operation_dir = os.path.join(TEMP_VIDEO_DIR, f"vid_interp_op_{timestamp}")
+        os.makedirs(operation_dir, exist_ok=True)
+        
+        # Subdirectory for storing intermediate .png frames for ffmpeg
+        frames_output_dir = os.path.join(operation_dir, "interpolated_frames")
+        os.makedirs(frames_output_dir, exist_ok=True)
+
+        output_video_filename = f"interpolated_video_{timestamp}.mp4"
+        final_output_video_path = os.path.join(TEMP_VIDEO_DIR, output_video_filename) # Final video goes one level up
+
+        cap = cv2.VideoCapture(input_video_path)
+        if not cap.isOpened():
+            raise gr.Error("Could not open input video.")
+        
+        original_fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames_input_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        input_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        input_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release() # Release early, will use skvideo.io.vreader or cv2 again for frame reading
+
+        if total_frames_input_video == 0:
+            raise gr.Error("Input video contains zero frames.")
+
+        output_w = int(input_w * output_resolution_scale_factor)
+        output_h = int(input_h * output_resolution_scale_factor)
+        
+        # Ensure output dimensions are at least 1x1, ffmpeg might fail with 0
+        output_w = max(1, output_w)
+        output_h = max(1, output_h)
+
+        if target_fps_override is not None and target_fps_override > 0:
+            final_fps = target_fps_override
+            fps_info_string = f"Target FPS: {final_fps}"
+        else:
+            # interpolation_exp results in 2**interpolation_exp times frame *segments*
+            # e.g. exp=1 -> 2 segments (orig, interp, orig), total 2x frames
+            # e.g. exp=2 -> 4 segments, total 4x frames
+            final_fps = original_fps * (2**interpolation_exp)
+            fps_info_string = f"Original FPS: {original_fps:.2f}, Multiplier: {2**interpolation_exp}x -> Target FPS: {final_fps:.2f}"
+        
+        status_updates = [f"Input video: {total_frames_input_video} frames, {original_fps:.2f} FPS, {input_w}x{input_h}"]
+        status_updates.append(f"Output: Model Scale: {model_inference_scale_factor}x, Res Scale: {output_resolution_scale_factor}x -> {output_w}x{output_h}")
+        status_updates.append(fps_info_string)
+        status_updates.append(f"FP16: {'Enabled' if use_fp16 else 'Disabled'}")
+        
+        # Use skvideo.io.vreader for robust frame reading
+        try:
+            videogen = skvideo.io.vreader(input_video_path)
+        except Exception as e:
+            raise gr.Error(f"Failed to read video frames using skvideo: {str(e)}")
+
+        last_frame_np = next(videogen).copy() # Read the first frame and make it writable
+
+        # Convert first frame to tensor, pad it
+        # Transpose HWC (skvideo) to CHW for PyTorch
+        last_frame_tensor = torch.from_numpy(last_frame_np.transpose(2, 0, 1)).to(device, non_blocking=True).unsqueeze(0).float() / 255.
+        # If output resolution scaling is different from 1.0, resize the tensor *before* model padding
+        if output_resolution_scale_factor != 1.0:
+            last_frame_tensor = F.interpolate(last_frame_tensor, size=(output_h, output_w), mode='bilinear', align_corners=False)
+        
+        I1_padded = _pad_image_for_video_interpolation(last_frame_tensor, model_inference_scale_factor, use_fp16)
+        
+        # Save the first frame
+        # Unpad, convert back to numpy, save. The output frames should be at target resolution output_w, output_h
+        # The I1_padded tensor may have different H,W due to model padding. We need to crop back to output_h, output_w.
+        _first_frame_tensor_slice = I1_padded[0, :, :output_h, :output_w]
+        first_frame_to_save_np = (_first_frame_tensor_slice.detach().cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+        # skvideo reads RGB, cv2 saves BGR by default. Ensure RGB for consistency or convert.
+        # Since we are reading with skvideo (RGB) and generating tensors, let's save RGB with cv2.imwrite by converting.
+        cv2.imwrite(os.path.join(frames_output_dir, f"frame_{0:07d}.png"), cv2.cvtColor(first_frame_to_save_np, cv2.COLOR_RGB2BGR))
+        saved_frame_count = 1
+        
+        progress_bar = tqdm(total=total_frames_input_video -1 , desc="Interpolating Video Frames")
+
+        for frame_idx, current_frame_np_orig in enumerate(videogen, start=1): # frame_idx is 1-based for subsequent frames
+            current_frame_np = current_frame_np_orig.copy() # Make the frame writable
+            I0_padded = I1_padded # Previous frame's I1 becomes current I0
+
+            # Convert current frame to tensor
+            current_frame_tensor = torch.from_numpy(current_frame_np.transpose(2, 0, 1)).to(device, non_blocking=True).unsqueeze(0).float() / 255.
+            if output_resolution_scale_factor != 1.0:
+                current_frame_tensor = F.interpolate(current_frame_tensor, size=(output_h, output_w), mode='bilinear', align_corners=False)
+            I1_padded = _pad_image_for_video_interpolation(current_frame_tensor, model_inference_scale_factor, use_fp16)
+
+            # Generate intermediate frames
+            # The 'n' for _make_inference_for_video_interpolation is the exponent value
+            # For 2x (exp=1), we need 1 middle frame (2**1 - 1).
+            # For 4x (exp=2), we need 3 middle frames (2**2 - 1).
+            # The 'interpolation_exp' parameter here is the actual exponent.
+            # No, the RIFE 'exp' means 2^exp *segments*. if exp=1, 2 segments (orig, new, orig), meaning 1 interpolated frame.
+            # if exp=2, 4 segments, meaning 3 interpolated frames.
+            # So, the number of interpolated frames is (2**interpolation_exp - 1).
+            # _make_inference_for_video_interpolation takes 'n_exp' which it uses as 2**n_exp-1.
+            # So we pass interpolation_exp directly.
+            
+            if interpolation_exp > 0: # Only run inference if we actually want to interpolate
+                 interpolated_tensors = _make_inference_for_video_interpolation(I0_padded, I1_padded, interpolation_exp, model, model_inference_scale_factor)
+            else: # if exp = 0, means no new frames, just original ones.
+                 interpolated_tensors = []
+
+
+            # Save interpolated frames
+            for mid_tensor in interpolated_tensors:
+                # Crop to output_h, output_w (after model inference which used padded dimensions)
+                _mid_tensor_slice = mid_tensor[0, :, :output_h, :output_w]
+                mid_np = (_mid_tensor_slice.detach().cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+                cv2.imwrite(os.path.join(frames_output_dir, f"frame_{saved_frame_count:07d}.png"), cv2.cvtColor(mid_np, cv2.COLOR_RGB2BGR))
+                saved_frame_count += 1
+            
+            # Save the current "I1" frame (which is the next original frame in sequence)
+            _current_I1_tensor_slice = I1_padded[0, :, :output_h, :output_w]
+            current_I1_np_to_save = (_current_I1_tensor_slice.detach().cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+            cv2.imwrite(os.path.join(frames_output_dir, f"frame_{saved_frame_count:07d}.png"), cv2.cvtColor(current_I1_np_to_save, cv2.COLOR_RGB2BGR))
+            saved_frame_count += 1
+            
+            progress_bar.update(1)
+            # status_updates.append(f"Processed source frame {frame_idx + 1}/{total_frames_input_video}. Saved {saved_frame_count} total frames.")
+            # progress((frame_idx + 1) / total_frames_input_video, desc=f"Processed {frame_idx+1}/{total_frames_input_video} frames")
+
+
+        progress_bar.close()
+        status_updates.append(f"Frame generation complete. Total frames for output video: {saved_frame_count}")
+
+        # 3. Create video from frames using FFmpeg
+        ffmpeg_cmd_create_video = [
+            'ffmpeg', '-y', 
+            '-r', str(final_fps), 
+            '-i', os.path.join(frames_output_dir, 'frame_%07d.png'),
+            '-s', f'{output_w}x{output_h}',
+            '-c:v', 'libx264', 
+            '-pix_fmt', 'yuv420p', 
+            '-movflags', '+faststart',
+            final_output_video_path # Temporary path before audio merge
+        ]
+        status_updates.append("Creating video from interpolated frames...")
+        # progress(0.9, desc="Muxing video with FFmpeg")
+
+        success_video_creation, msg_video_creation = _run_ffmpeg_command(ffmpeg_cmd_create_video, operation_dir) # Clean op_dir on failure
+        if not success_video_creation:
+            raise gr.Error(f"FFmpeg error during video creation: {msg_video_creation}")
+        status_updates.append(f"Video successfully created at {final_output_video_path}")
+
+        # 4. Transfer Audio (if source video had audio)
+        # Check if source video likely had audio (simple check, could be more robust)
+        # For now, always try to transfer. _transfer_audio_ffmpeg handles cases where source has no audio.
+        status_updates.append("Attempting audio transfer...")
+        # progress(0.95, desc="Transferring audio")
+        audio_success, audio_msg = _transfer_audio_ffmpeg(input_video_path, final_output_video_path, operation_dir)
+        status_updates.append(f"Audio transfer status: {audio_msg}")
+        
+        final_message = "\n".join(status_updates)
+        return final_output_video_path, final_message
+
+    except Exception as e:
+        # Ensure full cleanup of the operation_dir if an error occurs anywhere above
+        if operation_dir and os.path.exists(operation_dir): # Check if operation_dir was assigned
+            shutil.rmtree(operation_dir)
+        # Re-raise Gradio errors directly, wrap others
+        # Restore model and tensor dtypes in finally block
+        if isinstance(e, gr.Error):
+            raise e
+        else:
+            import traceback
+            traceback.print_exc()
+            raise gr.Error(f"Video interpolation failed: {type(e).__name__} - {str(e)}")
+    finally:
+        # Cleanup operation directory if it still exists (e.g. successful run before audio transfer)
+        if operation_dir and os.path.exists(operation_dir) and not (final_output_video_path and os.path.exists(final_output_video_path)):
+             shutil.rmtree(operation_dir)
+        elif operation_dir and os.path.exists(operation_dir) and final_output_video_path and os.path.exists(final_output_video_path):
+             # On success, op_dir (with frames) can be cleaned. The final video is outside.
+             shutil.rmtree(operation_dir)
+
+        torch.set_default_dtype(original_torch_dtype) # Always restore default tensor creation dtype
+
 
 # --- Video Info & Frame Extraction (for UI Tab 1) ---
 def get_video_info(video_file_path):
@@ -511,6 +837,46 @@ with gr.Blocks(title="RIFE Video and Image Interpolation", theme=gr.themes.Soft(
             vid_output_chained_interp = gr.Video(label="Chained Output Video")
             status_chained_interp = gr.Textbox(label="Status", interactive=False, show_label=False)
 
+        with gr.TabItem("4. Interpolate Video FPS"):
+            gr.Markdown("Upload a video to interpolate its frame rate using RIFE.")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    video_input_tab4 = gr.Video(label="Upload Video for FPS Interpolation")
+                    
+                    interp_exp_slider_tab4 = gr.Slider(
+                        minimum=0, maximum=4, value=1, step=1,
+                        label="Interpolation Multiplier (2^exp)",
+                        info="Multiplier for frame count. 0 = original FPS (no new frames), 1 = 2x frames, 2 = 4x frames, 3 = 8x, 4 = 16x."
+                    )
+                    model_scale_slider_tab4 = gr.Dropdown(
+                        label="Model Inference Scale Factor (--scale for RIFE)",
+                        choices=[0.25, 0.5, 1.0, 2.0, 4.0], # From inference_video.py args.scale
+                        value=1.0,
+                        info="Adjusts internal processing scale of the RIFE model. Smaller values (e.g., 0.5 for 4K) can speed up processing for UHD but might affect quality."
+                    )
+                    output_res_scale_slider_tab4 = gr.Slider(
+                        minimum=0.25, maximum=2.0, value=1.0, step=0.05,
+                        label="Output Resolution Scale Factor",
+                        info="Scales the output video resolution. E.g., 0.5 for half resolution, 1.0 for original, 2.0 for double."
+                    )
+                    target_fps_number_tab4 = gr.Number(
+                        label="Target Output FPS (Optional)",
+                        value=None, # Let it be None by default to use multiplier
+                        minimum=1,
+                        info="Override calculated FPS. If set, this FPS will be used for the output video. If blank, FPS is multiplied by 2^exp."
+                    )
+                    fp16_checkbox_tab4 = gr.Checkbox(
+                        label="Use FP16 Inference (CUDA GPUs with Tensor Cores)",
+                        value=False,
+                        info="Faster inference, less VRAM, requires compatible GPU. May slightly affect quality."
+                    )
+                    
+                    interpolate_video_button_tab4 = gr.Button("Interpolate Video FPS", variant="primary")
+
+                with gr.Column(scale=1):
+                    video_output_tab4 = gr.Video(label="Interpolated Video Output")
+                    status_text_tab4 = gr.Textbox(label="Processing Status", interactive=False, lines=10, show_label=True)
+
     # --- Event Handlers ---
     video_input.upload(
         fn=get_video_info,
@@ -547,6 +913,20 @@ with gr.Blocks(title="RIFE Video and Image Interpolation", theme=gr.themes.Soft(
         outputs=[vid_output_chained_interp, status_chained_interp]
     )
     
+    # Event handler for Tab 4: Video FPS Interpolation
+    interpolate_video_button_tab4.click(
+        fn=interpolate_uploaded_video,
+        inputs=[
+            video_input_tab4,
+            interp_exp_slider_tab4,
+            model_scale_slider_tab4,
+            output_res_scale_slider_tab4,
+            target_fps_number_tab4,
+            fp16_checkbox_tab4
+        ],
+        outputs=[video_output_tab4, status_text_tab4]
+    )
+
     gr.Markdown("---")
     gr.Markdown(
         """**Important Notes:**
