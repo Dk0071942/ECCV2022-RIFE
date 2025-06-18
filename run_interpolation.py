@@ -177,7 +177,7 @@ Extract the zip and place all its contents (folders like `RIFE_HDv2` and files l
 
 def _pad_image_for_video_interpolation(img_tensor, model_scale_factor, fp16_active):
     _n, _c, h_orig, w_orig = img_tensor.shape
-    tmp = max(32, int(32 / model_scale_factor)) 
+    tmp = max(64, int(64 / model_scale_factor)) 
     ph = ((h_orig - 1) // tmp + 1) * tmp
     pw = ((w_orig - 1) // tmp + 1) * tmp
     padding = (0, pw - w_orig, 0, ph - h_orig)
