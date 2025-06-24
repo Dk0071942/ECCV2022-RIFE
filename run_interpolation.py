@@ -296,6 +296,8 @@ def main_interpolate(
             '-i', str(frames_output_dir / 'frame_%07d.png'),
             '-s', f'{output_w}x{output_h}',
             '-c:v', 'libx264', 
+            '-crf', '18',
+            '-preset', 'slow',
             '-pix_fmt', 'yuv420p', 
             '-movflags', '+faststart',
             final_output_video_path
