@@ -2,43 +2,50 @@ import subprocess
 import shutil
 from pathlib import Path
 import os
+from typing import List, Tuple
 
-def run_ffmpeg_command(command: list[str], operation_dir_to_clean: Path = None) -> tuple[bool, str]:
+def run_ffmpeg_command(
+    command: List[Path | str],
+    operation_dir_to_clean: Path = None
+) -> Tuple[bool, str]:
     """
-    Runs an FFmpeg command.
+    Runs an FFmpeg command silently (no banner, no stats, no logs).
     
     Args:
-        command: The command to execute as a list of strings.
-        operation_dir_to_clean: If provided, this directory will be removed if the command fails.
-
+      command: full ffmpeg invocation, e.g.
+               ['ffmpeg', '-i', in.mp4, ... , out.mp4]
+      operation_dir_to_clean: if provided, this folder will be removed on failure.
+      
     Returns:
-        A tuple of (success, message).
+      (success, message).  message is empty on success, or contains the error.
     """
+    # ensure everything is string
+    cmd = [str(c) for c in command]
+    # inject silent flags right after 'ffmpeg'
+    # ffmpeg -hide_banner -loglevel quiet -nostats ...
+    cmd = cmd[:1] + ['-hide_banner', '-loglevel', 'quiet', '-nostats'] + cmd[1:]
+    
     try:
-        # Paths in the command should be converted to strings
-        cmd_str = [str(c) for c in command]
-        print(f"FFmpeg CMD: {' '.join(cmd_str)}")
-        process = subprocess.run(cmd_str, check=True, capture_output=True, text=True, encoding='utf-8')
-        if process.stdout: print(f"FFmpeg STDOUT: {process.stdout.strip()}")
-        if process.stderr: print(f"FFmpeg STDERR: {process.stderr.strip()}") # Often has info, not just errors
-        return True, "FFmpeg command successful."
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        return True, ""
     except subprocess.CalledProcessError as e:
-        err_msg = f"FFmpeg Error (code {e.returncode}): {e.stderr.strip() if e.stderr else 'Unknown FFmpeg error.'}"
-        print(err_msg)
         if operation_dir_to_clean and operation_dir_to_clean.exists():
             shutil.rmtree(operation_dir_to_clean)
-        return False, err_msg[:1000]
+        return False, f"FFmpeg exited with code {e.returncode}"
     except FileNotFoundError:
-        err_msg = "FFmpeg command not found. Ensure FFmpeg is installed and in system PATH."
         if operation_dir_to_clean and operation_dir_to_clean.exists():
             shutil.rmtree(operation_dir_to_clean)
-        return False, err_msg
+        return False, "FFmpeg not found in PATH"
     except Exception as e:
-        err_msg = f"An unexpected error occurred with FFmpeg: {str(e)}"
         if operation_dir_to_clean and operation_dir_to_clean.exists():
             shutil.rmtree(operation_dir_to_clean)
-        return False, err_msg
-
+        return False, f"Unexpected error: {e}"
+    
 def transfer_audio(source_video_path: Path, target_video_path: Path, operation_dir: Path) -> tuple[bool, str]:
     """Transfers audio from source_video to target_video using FFmpeg."""
     temp_audio_file = operation_dir / "temp_audio_for_transfer.mkv"

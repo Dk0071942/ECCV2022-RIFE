@@ -1,7 +1,7 @@
 import torch
 import shutil
 import datetime
-import skvideo.io
+import cv2
 from tqdm import tqdm
 from pathlib import Path
 from torch.nn import functional as F
@@ -9,6 +9,18 @@ from torch.nn import functional as F
 from rife_app.config import VIDEO_TMP_DIR
 from rife_app.utils.ffmpeg import run_ffmpeg_command, transfer_audio
 from rife_app.utils.interpolation import recursive_interpolate_video_frames
+
+def cv2_frame_reader(video_path: str):
+    """A generator to read video frames using OpenCV, yielding RGB frames."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise IOError(f"Could not open video file at {video_path}")
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        yield cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    cap.release()
 
 class VideoInterpolator:
     def __init__(self, model, device):
@@ -33,7 +45,6 @@ class VideoInterpolator:
         # For simplicity, using a library that directly writes numpy arrays is good.
         # But ffmpeg will read from disk, so format must be consistent. PNG is lossless.
         # The original used cv2.imwrite with a cvtColor. Let's replicate that for consistency.
-        import cv2
         cv2.imwrite(str(path), cv2.cvtColor(np_array, cv2.COLOR_RGB2BGR))
 
     def interpolate(
@@ -67,13 +78,16 @@ class VideoInterpolator:
             
             final_output_video_path = VIDEO_TMP_DIR / f"interpolated_video_{timestamp}.mp4"
 
-            # Using skvideo to get metadata is more reliable for web-uploaded videos
-            videogen_meta = skvideo.io.vreader(str(input_path))
-            metadata = skvideo.io.ffprobe(str(input_path))['video']
-            total_frames = int(metadata['@nb_frames'])
-            original_fps = eval(metadata['@avg_frame_rate'])
-            input_w = int(metadata['@width'])
-            input_h = int(metadata['@height'])
+            # Using cv2 to get metadata to avoid skvideo's numpy.float issue
+            cap = cv2.VideoCapture(str(input_path))
+            if not cap.isOpened():
+                raise IOError(f"Could not open video file: {input_path}")
+            
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            original_fps = cap.get(cv2.CAP_PROP_FPS)
+            input_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            input_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
 
             if total_frames == 0:
                 raise Exception("Input video contains zero frames.")
@@ -90,8 +104,8 @@ class VideoInterpolator:
                 f"FP16: {'Enabled' if use_fp16 else 'Disabled'}"
             ]
 
-            videogen = skvideo.io.vreader(str(input_path))
-            last_frame_np = next(videogen)
+            videogen = cv2_frame_reader(str(input_path))
+            last_frame_np = next(videogen).copy()
             
             last_frame_tensor = torch.from_numpy(last_frame_np.transpose(2, 0, 1)).to(self.device, non_blocking=True).unsqueeze(0).float() / 255.
             if output_res_scale_factor != 1.0:
@@ -105,7 +119,8 @@ class VideoInterpolator:
             pbar = tqdm(total=total_frames - 1, desc="Interpolating Video Frames")
             progress(0, desc="Starting...")
 
-            for frame_idx, current_frame_np in enumerate(videogen, start=1):
+            for frame_idx, current_frame_np_orig in enumerate(videogen, start=1):
+                current_frame_np = current_frame_np_orig.copy()
                 I0_padded = I1_padded
 
                 current_frame_tensor = torch.from_numpy(current_frame_np.transpose(2, 0, 1)).to(self.device, non_blocking=True).unsqueeze(0).float() / 255.
