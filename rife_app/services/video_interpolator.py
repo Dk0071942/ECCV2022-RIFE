@@ -108,6 +108,14 @@ class VideoInterpolator:
             last_frame_np = next(videogen).copy()
             
             last_frame_tensor = torch.from_numpy(last_frame_np.transpose(2, 0, 1)).to(self.device, non_blocking=True).unsqueeze(0).float() / 255.
+            
+            # Upscale if too small, then apply resolution scaling
+            h_orig, w_orig = last_frame_tensor.shape[2], last_frame_tensor.shape[3]
+            if h_orig < 512 or w_orig < 512:
+                target_h = max(h_orig, 512)
+                target_w = max(w_orig, 512)
+                last_frame_tensor = F.interpolate(last_frame_tensor, size=(target_h, target_w), mode='bilinear', align_corners=False)
+
             if output_res_scale_factor != 1.0:
                 last_frame_tensor = F.interpolate(last_frame_tensor, size=(output_h, output_w), mode='bilinear', align_corners=False)
             
@@ -124,6 +132,14 @@ class VideoInterpolator:
                 I0_padded = I1_padded
 
                 current_frame_tensor = torch.from_numpy(current_frame_np.transpose(2, 0, 1)).to(self.device, non_blocking=True).unsqueeze(0).float() / 255.
+                
+                # Upscale if too small, then apply resolution scaling
+                h_orig, w_orig = current_frame_tensor.shape[2], current_frame_tensor.shape[3]
+                if h_orig < 512 or w_orig < 512:
+                    target_h = max(h_orig, 512)
+                    target_w = max(w_orig, 512)
+                    current_frame_tensor = F.interpolate(current_frame_tensor, size=(target_h, target_w), mode='bilinear', align_corners=False)
+
                 if output_res_scale_factor != 1.0:
                     current_frame_tensor = F.interpolate(current_frame_tensor, size=(output_h, output_w), mode='bilinear', align_corners=False)
                 I1_padded = self._pad_image_for_video(current_frame_tensor, model_scale_factor, use_fp16)

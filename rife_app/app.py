@@ -14,6 +14,7 @@ from rife_app.services.image_interpolator import ImageInterpolator
 from rife_app.services.video_interpolator import VideoInterpolator
 from rife_app.services.chained import ChainedInterpolator
 from rife_app.utils.framing import get_video_info, extract_frames
+from rife_app.run_interpolation import main_interpolate
 
 # --- App Setup ---
 def initialize_app():
@@ -78,6 +79,28 @@ def handle_frame_extraction(video_file_path, start_str, end_str):
         
     return img_start, img_end, img_start, img_end, f"Extracted frames {start_frame} and {end_frame}."
 
+def handle_simple_interpolation(video_path, progress=gr.Progress(track_tqdm=True)):
+    """Handles the video interpolation process, including file management."""
+    if not video_path:
+        return None, "No video uploaded"
+    
+    output_dir = Path("./temp_gradio/interpolated_videos")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Use the simple main_interpolate function for 2x FPS interpolation
+        interpolated_video_path = main_interpolate(
+            input_video_path=video_path,
+            output_dir_path=str(output_dir),
+            exp=1,  # 2x interpolation
+            use_fp16=False,
+        )
+        
+        return interpolated_video_path, f"Video interpolated successfully to 2x FPS.\nOutput: {interpolated_video_path}"
+        
+    except Exception as e:
+        raise gr.Error(str(e))
+
 # --- Gradio Interface ---
 with gr.Blocks(title="RIFE Interpolation", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# RIFE Video and Image Frame Interpolation")
@@ -124,17 +147,12 @@ with gr.Blocks(title="RIFE Interpolation", theme=gr.themes.Soft()) as demo:
             vid_output_chained_interp = gr.Video(label="Chained Output Video")
             status_chained_interp = gr.Textbox(label="Status", interactive=False)
 
-        # Tab 4: Video FPS Interpolation
-        with gr.TabItem("4. Interpolate Video FPS"):
+        # Tab 4: Simple Video Interpolation (2x FPS)
+        with gr.TabItem("4. Simple Video Interpolation (2x FPS)"):
             with gr.Row():
                 with gr.Column(scale=1):
-                    video_input_tab4 = gr.Video(label="Upload Video for FPS Interpolation")
-                    interp_exp_slider_tab4 = gr.Slider(minimum=0, maximum=4, value=1, step=1, label="Interpolation Multiplier (2^exp)")
-                    model_scale_slider_tab4 = gr.Dropdown(label="Model Inference Scale", choices=[0.25, 0.5, 1.0, 2.0, 4.0], value=1.0)
-                    output_res_scale_slider_tab4 = gr.Slider(minimum=0.25, maximum=2.0, value=1.0, step=0.05, label="Output Resolution Scale")
-                    target_fps_number_tab4 = gr.Number(label="Target FPS (Optional)", value=None)
-                    fp16_checkbox_tab4 = gr.Checkbox(label="Use FP16 Inference", value=False)
-                    interpolate_video_button_tab4 = gr.Button("Interpolate Video FPS", variant="primary")
+                    video_input_tab4 = gr.Video(label="Upload Video for 2x FPS Interpolation")
+                    interpolate_video_button_tab4 = gr.Button("Interpolate Video (2x FPS)", variant="primary")
                 with gr.Column(scale=1):
                     video_output_tab4 = gr.Video(label="Interpolated Video Output")
                     status_text_tab4 = gr.Textbox(label="Processing Status", interactive=False, lines=10)
@@ -165,8 +183,8 @@ with gr.Blocks(title="RIFE Interpolation", theme=gr.themes.Soft()) as demo:
     
     # Tab 4
     interpolate_video_button_tab4.click(
-        lambda *args: video_interp.interpolate(*args) if video_interp else (None, "Model not loaded"),
-        inputs=[video_input_tab4, interp_exp_slider_tab4, model_scale_slider_tab4, output_res_scale_slider_tab4, target_fps_number_tab4, fp16_checkbox_tab4],
+        handle_simple_interpolation,
+        inputs=[video_input_tab4],
         outputs=[video_output_tab4, status_text_tab4]
     )
     

@@ -12,3 +12,5 @@ test/
 *.npz
 
 *.zip
+
+temp_gradio/*
