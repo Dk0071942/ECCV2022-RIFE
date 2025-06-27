@@ -161,9 +161,16 @@ class VideoInterpolator:
             status_updates.append(f"Frame generation complete. Total frames for output: {saved_frame_count}")
             
             ffmpeg_cmd = [
-                'ffmpeg', '-y', '-r', str(final_fps), '-i', frames_output_dir / 'frame_%07d.png',
-                '-s', f'{output_w}x{output_h}', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                '-movflags', '+faststart', final_output_video_path
+                'ffmpeg', '-y',
+                '-r', str(final_fps),
+                '-i', frames_output_dir / 'frame_%07d.png',
+                '-s', f'{output_w}x{output_h}',
+                '-c:v', 'libx264',
+                '-preset', 'veryfast',
+                '-crf', '18',
+                '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
+                final_output_video_path
             ]
             status_updates.append("Creating video from frames...")
             progress(1, desc="Assembling video")

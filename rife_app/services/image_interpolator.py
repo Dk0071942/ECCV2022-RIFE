@@ -47,9 +47,16 @@ class ImageInterpolator:
             # Create video
             output_video_path = VIDEO_TMP_DIR / f"std_slomo_{timestamp}.mp4"
             ffmpeg_cmd = [
-                'ffmpeg', '-y', '-r', str(fps), '-i', frames_dir / 'frame_%05d.png',
-                '-s', f'{w}x{h}', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', 
-                '-movflags', '+faststart', output_video_path
+                'ffmpeg', '-y',
+                '-r', str(fps),
+                '-i', frames_dir / 'frame_%05d.png',
+                '-s', f'{w}x{h}',
+                '-c:v', 'libx264',
+                '-preset', 'veryfast',
+                '-crf', '18',
+                '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
+                output_video_path
             ]
             
             success, msg = run_ffmpeg_command(ffmpeg_cmd, unique_op_dir)
