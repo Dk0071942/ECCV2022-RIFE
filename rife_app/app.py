@@ -194,4 +194,8 @@ with gr.Blocks(title="RIFE Interpolation", theme=gr.themes.Soft()) as demo:
 
 if __name__ == '__main__':
     print("Launching Gradio interface...")
-    demo.launch() 
+    demo.launch(
+        server_port=7860,
+        server_name="0.0.0.0",
+        inbrowser=False,
+    ) 
