@@ -101,8 +101,9 @@ def handle_simple_interpolation(video_path, progress=gr.Progress(track_tqdm=True
     except Exception as e:
         raise gr.Error(str(e))
 
-# --- Gradio Interface ---
-with gr.Blocks(title="RIFE Interpolation", theme=gr.themes.Soft()) as demo:
+def create_rife_ui():
+    """Creates the Gradio UI for RIFE interpolation."""
+    # --- Gradio Interface ---
     gr.Markdown("# RIFE Video and Image Frame Interpolation")
     
     with gr.Tabs():
@@ -193,6 +194,9 @@ with gr.Blocks(title="RIFE Interpolation", theme=gr.themes.Soft()) as demo:
 
 
 if __name__ == '__main__':
+    with gr.Blocks(title="RIFE Interpolation", theme=gr.themes.Soft()) as demo:
+        create_rife_ui()
+    
     print("Launching Gradio interface...")
     demo.launch(
         server_port=7860,
