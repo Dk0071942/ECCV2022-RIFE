@@ -95,11 +95,14 @@ class VideoInterpolator:
             output_w = max(1, int(input_w * output_res_scale_factor))
             output_h = max(1, int(input_h * output_res_scale_factor))
             
+            # Calculate final FPS
             final_fps = target_fps_override if target_fps_override else (original_fps * (2**interpolation_exp))
+            interpolation_info = f"Recursive: exp={interpolation_exp}"
             
             status_updates = [
                 f"Input: {total_frames} frames, {original_fps:.2f} FPS, {input_w}x{input_h}",
                 f"Output: Model Scale: {model_scale_factor}x, Res Scale: {output_res_scale_factor}x -> {output_w}x{output_h}",
+                f"Interpolation: {interpolation_info}",
                 f"Target FPS: {final_fps:.2f}",
                 f"FP16: {'Enabled' if use_fp16 else 'Disabled'}"
             ]
@@ -145,7 +148,9 @@ class VideoInterpolator:
                 I1_padded = self._pad_image_for_video(current_frame_tensor, model_scale_factor, use_fp16)
 
                 if interpolation_exp > 0:
+                    # Use standard recursive interpolation
                     interpolated_tensors = recursive_interpolate_video_frames(I0_padded, I1_padded, interpolation_exp, self.model, model_scale_factor)
+                    
                     for mid_tensor in interpolated_tensors:
                         self._save_frame(mid_tensor, frames_output_dir / f"frame_{saved_frame_count:07d}.png", output_h, output_w)
                         saved_frame_count += 1

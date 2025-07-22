@@ -14,10 +14,10 @@ class ChainedInterpolator:
     def __init__(self, model):
         self.model = model
 
-    def _generate_interpolation_segment(self, img_start_pil, img_end_pil, exp, fps, w, h, frames_dir, segment_path):
+    def _generate_interpolation_segment(self, img_start_pil, img_end_pil, num_passes, fps, w, h, frames_dir, segment_path):
         print(f"🔧 _generate_interpolation_segment: {segment_path.name}")
         print(f"  - Input frames: {img_start_pil.size} -> {img_end_pil.size}")
-        print(f"  - Parameters: exp={exp}, fps={fps}, target={w}x{h}")
+        print(f"  - Parameters: passes={num_passes}, fps={fps}, target={w}x{h}")
         
         img_start_tensor = pil_to_tensor(img_start_pil, DEVICE)
         img_end_tensor = pil_to_tensor(img_end_pil, DEVICE)
@@ -25,9 +25,28 @@ class ChainedInterpolator:
         img_start_padded, _ = pad_tensor_for_rife(img_start_tensor)
         img_end_padded, _ = pad_tensor_for_rife(img_end_tensor)
         
-        print(f"  - Calling RIFE model for interpolation...")
-        frame_tensors = generate_interpolated_frames(img_start_padded, img_end_padded, exp, self.model)
-        print(f"  - RIFE model returned {len(frame_tensors)} frame tensors")
+        print(f"  - Running {num_passes} passes of 2x interpolation for optimal quality...")
+        
+        # Use multiple passes of exp=1 for best quality
+        frame_tensors = [img_start_padded]  # Start with first frame
+        current_frames = [img_start_padded, img_end_padded]  # Initial frame pair
+        
+        for pass_num in range(num_passes):
+            print(f"  - Running pass {pass_num + 1}/{num_passes}...")
+            new_frames = []
+            # Process each adjacent pair in current_frames
+            for i in range(len(current_frames) - 1):
+                frame_a = current_frames[i]
+                frame_b = current_frames[i + 1]
+                # Generate middle frame using exp=1 (optimal 2x interpolation)
+                middle_frames = generate_interpolated_frames(frame_a, frame_b, 1, self.model)
+                new_frames.append(frame_a)
+                new_frames.extend(middle_frames)
+            new_frames.append(current_frames[-1])  # Add final frame
+            current_frames = new_frames
+        
+        frame_tensors = current_frames
+        print(f"  - Multiple passes completed: {len(frame_tensors)} total frames generated")
         
         # CRITICAL FIX: Exclude start and end frames to prevent duplication
         # frame_tensors contains [start_frame, intermediate_frames..., end_frame]
@@ -74,7 +93,7 @@ class ChainedInterpolator:
         else:
             print(f"  - ✅ FFmpeg completed successfully for {segment_path.name}")
 
-    def interpolate(self, anchor_video_path, middle_video_path, end_video_path, exp_value, interp_duration_seconds, final_fps):
+    def interpolate(self, anchor_video_path, middle_video_path, end_video_path, num_passes, interp_duration_seconds, final_fps):
         if not all([anchor_video_path, middle_video_path, end_video_path]):
             raise Exception("Anchor video, middle video, and end video are all required.")
         if interp_duration_seconds <= 0 or final_fps <= 0:
@@ -148,14 +167,17 @@ class ChainedInterpolator:
             end_first_pil = Image.fromarray(cv2.cvtColor(end_first_bgr, cv2.COLOR_BGR2RGB))
             print(f"Extracted end video first frame: {end_first_pil.size}")
 
-            # Calculate interpolation FPS
-            num_frames = (2**exp_value) + 1
-            interp_fps = max(0.1, math.ceil(num_frames / interp_duration_seconds * 100) / 100.0)
+            # Calculate interpolation FPS - fixed at 25 FPS, passes control duration
+            num_frames = (2**num_passes)
+            # Use fixed 25 FPS but adjust duration based on passes
+            interp_fps = 25.0
+            actual_duration = num_frames / 25.0
+            print(f"Interpolation will create {num_frames} frames at 25 FPS = {actual_duration:.2f}s duration")
 
             # Interpolation 1: Last frame of anchor video -> First frame of middle video
             interp1_path = segments_dir / "interp1.mp4"
             print(f"Generating interpolation 1: anchor last frame -> middle first frame")
-            self._generate_interpolation_segment(anchor_last_pil, middle_first_pil, exp_value, interp_fps, target_w, target_h, frames1_dir, interp1_path)
+            self._generate_interpolation_segment(anchor_last_pil, middle_first_pil, num_passes, interp_fps, target_w, target_h, frames1_dir, interp1_path)
             
             # Validate interpolation 1 was created
             if not interp1_path.exists():
@@ -172,11 +194,11 @@ class ChainedInterpolator:
             print(f"🔍 DEBUG: Generating interpolation 2: middle last frame -> end first frame")
             print(f"🔍 DEBUG: Middle last frame size: {middle_last_pil.size}")
             print(f"🔍 DEBUG: End first frame size: {end_first_pil.size}")
-            print(f"🔍 DEBUG: Exp value: {exp_value}, FPS: {interp_fps}")
+            print(f"🔍 DEBUG: Number of passes: {num_passes}, FPS: {interp_fps}")
             print(f"🔍 DEBUG: Target dimensions: {target_w}x{target_h}")
             
             try:
-                self._generate_interpolation_segment(middle_last_pil, end_first_pil, exp_value, interp_fps, target_w, target_h, frames2_dir, interp2_path)
+                self._generate_interpolation_segment(middle_last_pil, end_first_pil, num_passes, interp_fps, target_w, target_h, frames2_dir, interp2_path)
                 print(f"🔍 DEBUG: Interpolation 2 generation completed without exception")
             except Exception as e:
                 print(f"❌ ERROR: Interpolation 2 generation failed: {e}")

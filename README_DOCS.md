@@ -7,6 +7,10 @@ This directory contains comprehensive documentation for the RIFE (Real-Time Inte
 ### Core Documentation
 - **[ECCV2022-RIFE_DOCS.md](ECCV2022-RIFE_DOCS.md)** - Complete technical documentation with Mermaid diagrams
 - **[RIFE_INTEGRATION_SUMMARY.md](RIFE_INTEGRATION_SUMMARY.md)** - Integration overview and workflow summary
+- **[RIFE_INTERPOLATION_QUALITY_ANALYSIS.md](RIFE_INTERPOLATION_QUALITY_ANALYSIS.md)** - ⭐ Critical quality research and findings
+
+### Quality & Performance Analysis
+- **[DISK_BASED_INTERPOLATION.md](DISK_BASED_INTERPOLATION.md)** - Memory-efficient interpolation approach
 
 ### Original RIFE Documentation
 - **[README.md](README.md)** - Original ECCV2022-RIFE project documentation
@@ -19,6 +23,13 @@ Start with **[ECCV2022-RIFE_DOCS.md](ECCV2022-RIFE_DOCS.md)** for:
 - Technical specifications and performance metrics
 - Integration patterns with LatentSync
 - Usage examples and configuration options
+
+### 🚨 **Critical Quality Research**
+**Must Read**: **[RIFE_INTERPOLATION_QUALITY_ANALYSIS.md](RIFE_INTERPOLATION_QUALITY_ANALYSIS.md)** reveals:
+- Why multiple 2x passes produce **better quality** than high interpolation factors
+- How high factors (exp=3) create blurry, artifact-heavy results
+- Best practices for professional-quality frame interpolation
+- Technical analysis of RIFE model training biases
 
 ### Integration Overview
 See **[RIFE_INTEGRATION_SUMMARY.md](RIFE_INTEGRATION_SUMMARY.md)** for:
