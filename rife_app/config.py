@@ -10,7 +10,7 @@ VIDEO_TMP_DIR    = TEMP_DIR / "videos"
 CHAINED_TMP_DIR  = TEMP_DIR / "chained"
 
 # Defaults
-DEFAULT_FPS      = 24
+DEFAULT_FPS      = 25
 DEVICE           = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Ensure temporary directories exist

@@ -79,7 +79,8 @@ class SimpleVideoReencoder:
             
             # If video already meets standards, return original file
             if meets_standards:
-                return input_path, f"✅ Video already meets encoding standards!\n\n{analysis_report}\n\n⚡ No re-encoding needed - original file returned."
+                bitrate_info = self._format_bitrate_info(video_params)
+                return input_path, f"✅ Video already meets encoding standards!\n\n{analysis_report}\n\n{bitrate_info}\n\n⚡ No re-encoding needed - original file returned."
             
             # If analysis failed due to missing tools, proceed with re-encoding
             if analysis_report.startswith("❌ Failed to analyze"):
@@ -114,14 +115,22 @@ class SimpleVideoReencoder:
             
             if result.returncode == 0 and output_path.exists():
                 processing_time = end_time - start_time
+                
+                # Analyze the re-encoded video for final bit rate info
+                final_meets_standards, final_analysis_report, final_video_params = self.analyzer.analyze_video(str(output_path))
+                final_bitrate_info = self._format_bitrate_info(final_video_params)
+                original_bitrate_info = self._format_bitrate_info(video_params)
+                
                 success_msg = (
                     f"✅ Video re-encoded successfully in {processing_time:.1f}s\n\n"
-                    f"📊 ORIGINAL VIDEO ANALYSIS:\n{analysis_report}\n\n"
-                    f"🎯 Applied standard encoding parameters:\n"
+                    f"📊 ORIGINAL VIDEO:\n{analysis_report}\n\n"
+                    f"{original_bitrate_info}\n\n"
+                    f"🎯 APPLIED ENCODING:\n"
                     f"• H.264 codec with CRF 18\n"
                     f"• BT.709 color space\n"
                     f"• AAC audio at 192k\n"
-                    f"• Web optimized"
+                    f"• Web optimized\n\n"
+                    f"📊 FINAL RESULT:\n{final_bitrate_info}"
                 )
                 return str(output_path), success_msg
             else:
@@ -131,6 +140,37 @@ class SimpleVideoReencoder:
         except Exception as e:
             return None, f"❌ Error: {str(e)}"
     
+    def _format_bitrate_info(self, video_params):
+        """Format bit rate information for display."""
+        if not video_params:
+            return "📊 BIT RATE INFO: Not available"
+        
+        info_lines = ["📊 BIT RATE INFO:"]
+        
+        # Video bit rate
+        video_bitrate = video_params.get('bitrate')
+        if video_bitrate:
+            video_mbps = video_bitrate / 1_000_000
+            info_lines.append(f"• Video: {video_mbps:.2f} Mbps ({video_bitrate:,} bps)")
+        else:
+            info_lines.append("• Video: Not available")
+        
+        # Audio bit rate
+        audio_bitrate = video_params.get('audio_bitrate')
+        if audio_bitrate:
+            audio_kbps = audio_bitrate / 1000
+            info_lines.append(f"• Audio: {audio_kbps:.0f} kbps ({audio_bitrate:,} bps)")
+        else:
+            info_lines.append("• Audio: Not available")
+        
+        # Resolution info for context
+        width = video_params.get('width', 0)
+        height = video_params.get('height', 0)
+        if width and height:
+            info_lines.append(f"• Resolution: {width}x{height}")
+        
+        return "\n".join(info_lines)
+    
     def get_info(self):
         """Get encoding information."""
         return """🎥 Smart Video Re-encoding
@@ -139,6 +179,7 @@ class SimpleVideoReencoder:
 • Checks current encoding first
 • Skips re-encoding if already optimal
 • Only processes when needed
+• Provides detailed bit rate information
 
 🎯 STANDARD PARAMETERS:
 • Codec: H.264 (libx264) with CRF 18
@@ -146,6 +187,12 @@ class SimpleVideoReencoder:
 • Color: BT.709 (HD standard)
 • Audio: AAC 192k at 16kHz
 • Web optimized with faststart
+
+📊 BIT RATE MONITORING:
+• Shows original video/audio bit rates
+• Displays final encoded bit rates
+• Compares before/after quality metrics
+• Resolution and format details
 
 ⚡ EFFICIENCY:
 • Saves time on compliant videos
