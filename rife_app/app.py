@@ -79,7 +79,9 @@ def handle_frame_extraction(video_file_path, start_str, end_str):
     if not img_start or not img_end:
         raise gr.Error("Failed to extract frames from video.")
         
-    return img_start, img_end, img_start, img_end, f"Extracted frames {start_frame} and {end_frame}."
+    # Return frames in reversed order for Tab 2 interpolation:
+    # end frame as first image, start frame as second image
+    return img_start, img_end, img_end, img_start, f"Extracted frames {start_frame} and {end_frame}. Tab 2 will interpolate from frame {end_frame} to frame {start_frame}."
 
 def handle_simple_interpolation(video_path, progress=gr.Progress(track_tqdm=True)):
     """Handles the video interpolation process, including file management."""
@@ -152,13 +154,15 @@ def create_rife_ui():
                     gr.Markdown("### Extracted Frames:")
                     extracted_start_img_display = gr.Image(label="Start Frame Preview", type="pil", interactive=False)
                     extracted_end_img_display = gr.Image(label="End Frame Preview", type="pil", interactive=False)
+                    gr.Markdown("*Note: These frames will be automatically loaded in Tab 2 with reversed order for interpolation.*")
 
         # Tab 2: Image Interpolation
         with gr.TabItem("2. Interpolate Between Images"):
-            # ... (UI definition)
+            gr.Markdown("### Interpolate between two images")
+            gr.Markdown("*When using frames from Tab 1, the **end frame** becomes the **first image** and the **start frame** becomes the **second image**, creating a reverse interpolation.*")
             with gr.Row():
-                img0_input_interpolation = gr.Image(type="pil", label="First Image")
-                img1_input_interpolation = gr.Image(type="pil", label="Second Image")
+                img0_input_interpolation = gr.Image(type="pil", label="First Image (Source)")
+                img1_input_interpolation = gr.Image(type="pil", label="Second Image (Target)")
             exp_slider = gr.Slider(minimum=1, maximum=5, value=2, step=1, label="Interpolation Factor (exp)")
             fps_number = gr.Number(value=DEFAULT_FPS, label="Output Video FPS", minimum=1)
             interpolate_button = gr.Button("Generate Interpolated Video", variant="primary")
