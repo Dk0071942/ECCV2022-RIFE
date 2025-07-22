@@ -173,8 +173,10 @@ def create_rife_ui():
         with gr.TabItem("3. Chained Video Interpolation"):
             # ... (UI definition)
             with gr.Row():
-                anchor_img_chained = gr.Image(type="pil", label="Anchor Image (Start/End)")
-                middle_video_chained = gr.Video(label="Middle Video")
+                with gr.Column():
+                    anchor_video_chained = gr.Video(label="Anchor Video (Start)")
+                    middle_video_chained = gr.Video(label="Middle Video")
+                    end_video_chained = gr.Video(label="End Video")
             exp_chained_interp = gr.Slider(minimum=1, maximum=5, value=2, step=1, label="Interpolation Factor (exp)")
             interp_duration_chained = gr.Number(value=2.0, minimum=0.1, label="Interpolation Duration (s)")
             main_video_fps_chained = gr.Number(value=DEFAULT_FPS, label="Final FPS")
@@ -243,7 +245,7 @@ def create_rife_ui():
     # Tab 3
     btn_run_chained_interp.click(
         lambda *args: chained_interp.interpolate(*args) if chained_interp else (None, "Model not loaded"),
-        inputs=[anchor_img_chained, middle_video_chained, exp_chained_interp, interp_duration_chained, main_video_fps_chained],
+        inputs=[anchor_video_chained, middle_video_chained, end_video_chained, exp_chained_interp, interp_duration_chained, main_video_fps_chained],
         outputs=[vid_output_chained_interp, status_chained_interp]
     )
     
