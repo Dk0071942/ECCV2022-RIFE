@@ -13,6 +13,7 @@ from rife_app.models.loader import get_model, setup_torch_device
 from rife_app.services.image_interpolator import ImageInterpolator
 from rife_app.services.video_interpolator import VideoInterpolator
 from rife_app.services.chained import ChainedInterpolator
+from rife_app.services.simple_reencoder import SimpleVideoReencoder
 from rife_app.utils.framing import get_video_info, extract_frames
 from rife_app.run_interpolation import main_interpolate
 
@@ -35,10 +36,11 @@ def initialize_app():
     image_interpolator = ImageInterpolator(model) if model else None
     video_interpolator = VideoInterpolator(model, DEVICE) if model else None
     chained_interpolator = ChainedInterpolator(model) if model else None
+    video_reencoder = SimpleVideoReencoder()  # Simple video re-encoder
     
-    return image_interpolator, video_interpolator, chained_interpolator
+    return image_interpolator, video_interpolator, chained_interpolator, video_reencoder
 
-image_interp, video_interp, chained_interp = initialize_app()
+image_interp, video_interp, chained_interp, video_reencoder = initialize_app()
 
 # --- UI Helper Functions ---
 def handle_video_upload(video_file_path):
@@ -101,6 +103,34 @@ def handle_simple_interpolation(video_path, progress=gr.Progress(track_tqdm=True
     except Exception as e:
         raise gr.Error(str(e))
 
+def handle_video_reencoding(video_path):
+    """Simple video re-encoding handler with comprehensive input logging."""
+    print("=" * 60)
+    print("🎬 GRADIO HANDLER - Video Re-encoding Started")
+    print(f"🔍 GRADIO INPUT TYPE: {type(video_path)}")
+    print(f"🔍 GRADIO INPUT REPR: {repr(video_path)}")
+    print(f"🔍 GRADIO INPUT BOOL: {bool(video_path)}")
+    
+    if hasattr(video_path, '__dict__'):
+        print(f"🔍 GRADIO INPUT VARS: {vars(video_path)}")
+    
+    if not video_path:
+        print("❌ GRADIO HANDLER - No video uploaded")
+        return None, "No video uploaded", ""
+    
+    print("🔄 GRADIO HANDLER - Calling reencoder...")
+    
+    # Simple re-encoding call
+    reencoded_video_path, status_message = video_reencoder.reencode_video(video_path)
+    
+    print(f"✅ GRADIO HANDLER - Reencoder returned: {reencoded_video_path is not None}")
+    print("=" * 60)
+    
+    # Get encoding info
+    encoding_info = video_reencoder.get_info()
+    
+    return reencoded_video_path, status_message, encoding_info
+
 def create_rife_ui():
     """Creates the Gradio UI for RIFE interpolation."""
     # --- Gradio Interface ---
@@ -158,6 +188,37 @@ def create_rife_ui():
                     video_output_tab4 = gr.Video(label="Interpolated Video Output")
                     status_text_tab4 = gr.Textbox(label="Processing Status", interactive=False, lines=10)
 
+        # Tab 5: Video Re-encoding
+        with gr.TabItem("5. Video Re-encoding"):
+            gr.Markdown("## 🎥 Professional Video Re-encoding")
+            gr.Markdown("Re-encode videos using standardized high-quality parameters for optimal compatibility and quality.")
+            
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("### Input")
+                    video_input_reencoding = gr.Video(label="Upload Video to Re-encode")
+                    reencode_button = gr.Button("🔄 Re-encode Video", variant="primary", size="lg")
+                    
+                with gr.Column(scale=1):
+                    gr.Markdown("### Output")
+                    video_output_reencoding = gr.Video(label="Re-encoded Video")
+                    
+            with gr.Row():
+                with gr.Column(scale=1):
+                    status_text_reencoding = gr.Textbox(
+                        label="Processing Status", 
+                        interactive=False, 
+                        lines=8,
+                        placeholder="Upload a video and click 'Re-encode Video' to start..."
+                    )
+                with gr.Column(scale=1):
+                    encoding_info_display = gr.Textbox(
+                        label="Encoding Information", 
+                        interactive=False, 
+                        lines=8,
+                        value=SimpleVideoReencoder().get_info()
+                    )
+
     # --- Event Handlers ---
     # Tab 1
     video_input.upload(handle_video_upload, inputs=[video_input], outputs=[video_info_display, start_frame_num_input, end_frame_num_input])
@@ -187,6 +248,13 @@ def create_rife_ui():
         handle_simple_interpolation,
         inputs=[video_input_tab4],
         outputs=[video_output_tab4, status_text_tab4]
+    )
+    
+    # Tab 5: Video Re-encoding
+    reencode_button.click(
+        handle_video_reencoding,
+        inputs=[video_input_reencoding],
+        outputs=[video_output_reencoding, status_text_reencoding, encoding_info_display]
     )
     
     gr.Markdown("---")

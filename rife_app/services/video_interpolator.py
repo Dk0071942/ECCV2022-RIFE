@@ -166,9 +166,13 @@ class VideoInterpolator:
                 '-i', frames_output_dir / 'frame_%07d.png',
                 '-s', f'{output_w}x{output_h}',
                 '-c:v', 'libx264',
-                '-preset', 'veryfast',
+                '-preset', 'slow',
                 '-crf', '18',
                 '-pix_fmt', 'yuv420p',
+                '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
+                '-color_primaries', 'bt709',
+                '-color_trc', 'bt709', 
+                '-colorspace', 'bt709',
                 '-movflags', '+faststart',
                 final_output_video_path
             ]

@@ -92,7 +92,10 @@ class ChainedInterpolator:
             # Prepare Middle Video
             middle_reencoded_path = segments_dir / "middle_reencoded.mp4"
             vf_filter = f"scale=w={target_w}:h={target_h}:force_original_aspect_ratio=1,pad=w={target_w}:h={target_h}:x=(ow-iw)/2:y=(oh-ih)/2:color=black"
-            cmd_middle = ['ffmpeg', '-y', '-i', middle_video_path, '-vf', vf_filter, '-r', str(final_fps), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', middle_reencoded_path]
+            cmd_middle = ['ffmpeg', '-y', '-i', middle_video_path, '-vf', vf_filter, '-r', str(final_fps), 
+                         '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-pix_fmt', 'yuv420p',
+                         '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
+                         '-movflags', '+faststart', '-an', middle_reencoded_path]
             success, msg = run_ffmpeg_command(cmd_middle)
             if not success: raise Exception(f"FFmpeg for Middle video prep: {msg}")
 

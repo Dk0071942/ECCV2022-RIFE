@@ -93,7 +93,7 @@ python3 inference_img.py --img img0.png img1.png --exp=4
 (2^4=16X interpolation results)
 After that, you can use pngs to generate mp4:
 ```
-ffmpeg -r 10 -f image2 -i output/img%d.png -s 448x256 -c:v libx264 -pix_fmt yuv420p output/slomo.mp4 -q:v 0 -q:a 0
+ffmpeg -r 10 -f image2 -i output/img%d.png -s 448x256 -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -vf "format=yuv420p,colorspace=all=bt709:iall=bt709:fast=1" -color_primaries bt709 -color_trc bt709 -colorspace bt709 -movflags +faststart output/slomo.mp4
 ```
 You can also use pngs to generate gif:
 ```

@@ -19,11 +19,23 @@ def run_ffmpeg_command(
     Returns:
       (success, message).  message is empty on success, or contains the error.
     """
+    # Validate input command
+    if not command or len(command) == 0:
+        return False, "Empty command provided"
+    
     # ensure everything is string
     cmd = [str(c) for c in command]
+    
+    # Validate that first element is 'ffmpeg'
+    if not cmd[0].endswith('ffmpeg'):
+        return False, f"Command does not start with ffmpeg: {cmd[0]}"
+    
     # inject silent flags right after 'ffmpeg'
     # ffmpeg -hide_banner -loglevel quiet -nostats ...
-    cmd = cmd[:1] + ['-hide_banner', '-loglevel', 'quiet', '-nostats'] + cmd[1:]
+    if len(cmd) >= 1:
+        cmd = cmd[:1] + ['-hide_banner', '-loglevel', 'quiet', '-nostats'] + cmd[1:]
+    else:
+        return False, "Invalid command structure"
     
     try:
         subprocess.run(
