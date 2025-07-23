@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  rife-app:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./temp_gradio:/app/temp_gradio
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
