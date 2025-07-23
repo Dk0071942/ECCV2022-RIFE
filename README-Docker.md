@@ -25,8 +25,12 @@ cd ECCV2022-RIFE
 # Build the image
 docker build -t rife-app .
 
-# Run the container
-docker run --gpus all -p 7860:7860 -v $(pwd)/temp_gradio:/app/temp_gradio rife-app
+# Run the container with proper volume mounts
+docker run --gpus all -p 7860:7860 \
+  -v $(pwd)/temp_gradio:/app/temp_gradio \
+  -v $(pwd)/train_log:/app/train_log:ro \
+  --restart unless-stopped \
+  rife-app
 ```
 
 ## Access the Application
@@ -47,6 +51,20 @@ The RIFE Docker app provides:
 ## Volume Mounts
 
 - `./temp_gradio:/app/temp_gradio` - Temporary files for processing
+- `./train_log:/app/train_log:ro` - RIFE model files (read-only mount)
+
+## Improved Features
+
+### Following LatentSync Best Practices
+- **Optimized layer caching**: Dependencies installed before code copy
+- **Model verification**: Automatic validation of RIFE model files
+- **Health checking**: Built-in container health monitoring
+- **Production ready**: Proper restart policies and resource management
+
+### Performance Optimizations
+- **Efficient builds**: .dockerignore reduces build context size
+- **Layer optimization**: Better Docker layer caching for faster rebuilds
+- **Resource management**: Proper GPU allocation and memory handling
 
 ## GPU Requirements
 
