@@ -26,6 +26,7 @@ import shutil
 import tempfile
 from typing import List, Tuple, Optional, Iterator
 import time
+import math
 from dataclasses import dataclass
 
 from .memory_monitor import GPUMemoryMonitor, monitor_memory_usage
@@ -114,6 +115,7 @@ class DiskBasedInterpolator:
     ) -> List[FrameInfo]:
         """
         Interpolate between two frames and save results to disk.
+        Always uses timestep=0.5 for optimal quality.
         
         Args:
             frame_a_path: Path to first frame
@@ -125,6 +127,12 @@ class DiskBasedInterpolator:
         Returns:
             List of FrameInfo objects for generated frames
         """
+        # For progressive refinement, we should only interpolate at the midpoint
+        # Check if 0.5 is in the requested positions
+        if 0.5 not in temporal_positions and not any(abs(pos - 0.5) < 0.001 for pos in temporal_positions):
+            # If not asking for midpoint, return empty (shouldn't happen with progressive approach)
+            return []
+        
         # Load the two input frames
         frame_a = self._load_frame_from_disk(frame_a_path)
         frame_b = self._load_frame_from_disk(frame_b_path)
@@ -134,41 +142,23 @@ class DiskBasedInterpolator:
         
         generated_frames = []
         
-        for pos in temporal_positions:
-            if pos <= 0.0 or pos >= 1.0:
-                continue  # Skip start/end positions
-                
-            # Generate intermediate frame at this position
-            # Note: RIFE generates 0.5 position, we approximate others
-            if abs(pos - 0.5) < 0.001:
-                # Exact middle frame
-                intermediate = self.model.inference(frame_a, frame_b, scale=model_scale_factor)
-            else:
-                # Approximate other positions using blending
-                middle = self.model.inference(frame_a, frame_b, scale=model_scale_factor)
-                
-                if pos < 0.5:
-                    # Closer to frame A
-                    weight = pos * 2  # Map [0, 0.5] to [0, 1]
-                    intermediate = (1 - weight) * frame_a + weight * middle
-                else:
-                    # Closer to frame B  
-                    weight = (pos - 0.5) * 2  # Map [0.5, 1] to [0, 1]
-                    intermediate = (1 - weight) * middle + weight * frame_b
-            
-            # Save to disk
-            output_path = output_dir / f"frame_{pos:.6f}.png"
-            if self._save_frame_to_disk(intermediate, output_path):
-                frame_info = FrameInfo(
-                    path=output_path,
-                    index=pos,
-                    wave=0  # Will be updated by caller
-                )
-                generated_frames.append(frame_info)
-            
-            # Cleanup GPU memory immediately
-            del intermediate
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        # Generate the middle frame (always at timestep=0.5)
+        intermediate = self.model.inference(frame_a, frame_b, scale=model_scale_factor)
+        
+        # Save to disk - we'll use a placeholder temporal position
+        # The actual temporal position will be set by the caller
+        output_path = output_dir / f"frame_{time.time():.6f}.png"
+        if self._save_frame_to_disk(intermediate, output_path):
+            frame_info = FrameInfo(
+                path=output_path,
+                index=0.5,  # This will be updated by caller to actual position
+                wave=0  # Will be updated by caller
+            )
+            generated_frames.append(frame_info)
+        
+        # Cleanup GPU memory immediately
+        del intermediate
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
         # Cleanup input frames
         del frame_a, frame_b
@@ -248,26 +238,22 @@ class DiskBasedInterpolator:
                 frame_a_info = all_frames[i]
                 frame_b_info = all_frames[i + 1]
                 
-                # Calculate temporal positions for intermediate frames
-                positions = []
-                time_span = frame_b_info.index - frame_a_info.index
+                # For progressive refinement, always interpolate at midpoint
+                mid_pos = (frame_a_info.index + frame_b_info.index) / 2.0
                 
-                for j in range(1, frames_per_pair + 1):
-                    pos = frame_a_info.index + (j / (frames_per_pair + 1)) * time_span
-                    positions.append(pos)
-                
-                # Generate intermediate frames for this pair
+                # Generate intermediate frame at midpoint only
                 intermediates = self._interpolate_pair_to_disk(
                     frame_a_info.path,
                     frame_b_info.path,
                     temp_dir,
-                    positions,
+                    [0.5],  # Always use 0.5 for optimal quality
                     model_scale_factor
                 )
                 
-                # Update wave number
+                # Update wave number and correct temporal index
                 for frame_info in intermediates:
                     frame_info.wave = wave
+                    frame_info.index = mid_pos  # Update to actual temporal position
                 
                 new_frames.extend(intermediates)
                 
@@ -425,7 +411,7 @@ def disk_based_interpolate(
         if success:
             passes = int(math.log2(len(frame_infos))) if len(frame_infos) > 1 else 1
             duration_25fps = len(frame_infos) / 25.0
-            return output_path, f"Disk-based interpolation successful: {passes} passes → {len(frame_infos)} frames → {duration_25fps:.2f}s at 25 FPS"
+            return str(output_path), f"Disk-based interpolation successful: {passes} passes → {len(frame_infos)} frames → {duration_25fps:.2f}s at 25 FPS"
         else:
             return None, "Failed to create video from frames"
             

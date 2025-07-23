@@ -50,7 +50,8 @@ class ImageInterpolator:
                 
                 if video_path:
                     duration_seconds = target_frames / 25.0
-                    return video_path, f"Disk-based interpolation: {num_passes} passes → {target_frames} frames → {duration_seconds:.2f}s at 25 FPS. {status_msg}"
+                    # Ensure video_path is a string for Gradio
+                    return str(video_path), f"Disk-based interpolation: {num_passes} passes → {target_frames} frames → {duration_seconds:.2f}s at 25 FPS. {status_msg}"
                 else:
                     return None, f"Disk-based interpolation failed: {status_msg}"
                     
@@ -112,7 +113,7 @@ class ImageInterpolator:
             if unique_op_dir.exists():
                 shutil.rmtree(unique_op_dir)
 
-            return output_video_path, f"Interpolation successful using {interpolation_method}. Generated {len(frame_tensors)} frames with optimal quality."
+            return str(output_video_path), f"Interpolation successful using {interpolation_method}. Generated {len(frame_tensors)} frames with optimal quality."
         except Exception as e:
             # Cleanup on error
             if unique_op_dir.exists():
