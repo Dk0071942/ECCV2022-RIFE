@@ -1,110 +1,190 @@
 import shutil
 import datetime
-import math
 from pathlib import Path
 from PIL import Image
 import cv2
+from enum import Enum
+from typing import Union
 
 from rife_app.config import DEVICE, CHAINED_TMP_DIR, VIDEO_TMP_DIR
-from rife_app.utils.framing import get_video_info, pil_to_tensor, pad_tensor_for_rife, save_tensor_as_image
-from rife_app.utils.interpolation import generate_interpolated_frames
+from rife_app.utils.framing import get_video_info, extract_frames
 from rife_app.utils.ffmpeg import run_ffmpeg_command, scale_and_pad_image
+from rife_app.services.image_interpolator import ImageInterpolator
+
+class InterpolationMethod(Enum):
+    """Defines available interpolation methods for video chaining."""
+    IMAGE_INTERPOLATION = "image_interpolation"
+    DISK_BASED = "disk_based"
 
 class ChainedInterpolator:
+    """Enhanced video chaining with configurable interpolation methods."""
+    
     def __init__(self, model):
         self.model = model
+        self.image_interpolator = ImageInterpolator(model)
+        
+    @classmethod
+    def get_available_methods(cls):
+        """Returns list of available interpolation methods."""
+        return [method.value for method in InterpolationMethod]
 
-    def _generate_interpolation_segment(self, img_start_pil, img_end_pil, num_passes, fps, w, h, frames_dir, segment_path):
-        print(f"🔧 _generate_interpolation_segment: {segment_path.name}")
-        print(f"  - Input frames: {img_start_pil.size} -> {img_end_pil.size}")
-        print(f"  - Parameters: passes={num_passes}, fps={fps}, target={w}x{h}")
+    def _extract_boundary_frames(self, video_path, position='last'):
+        """
+        Enhanced frame extraction with validation.
         
-        img_start_tensor = pil_to_tensor(img_start_pil, DEVICE)
-        img_end_tensor = pil_to_tensor(img_end_pil, DEVICE)
-
-        img_start_padded, _ = pad_tensor_for_rife(img_start_tensor)
-        img_end_padded, _ = pad_tensor_for_rife(img_end_tensor)
+        Args:
+            video_path: Path to video file
+            position: 'first' or 'last' frame to extract
         
-        print(f"  - Running {num_passes} passes of 2x interpolation for optimal quality...")
+        Returns:
+            PIL.Image: Extracted frame
+        """
+        print(f"📸 Extracting {position} frame from {Path(video_path).name}")
         
-        # Use multiple passes of exp=1 for best quality
-        frame_tensors = [img_start_padded]  # Start with first frame
-        current_frames = [img_start_padded, img_end_padded]  # Initial frame pair
-        
-        for pass_num in range(num_passes):
-            print(f"  - Running pass {pass_num + 1}/{num_passes}...")
-            new_frames = []
-            # Process each adjacent pair in current_frames
-            for i in range(len(current_frames) - 1):
-                frame_a = current_frames[i]
-                frame_b = current_frames[i + 1]
-                # Generate middle frame using exp=1 (optimal 2x interpolation)
-                middle_frames = generate_interpolated_frames(frame_a, frame_b, 1, self.model)
-                new_frames.append(frame_a)
-                new_frames.extend(middle_frames)
-            new_frames.append(current_frames[-1])  # Add final frame
-            current_frames = new_frames
-        
-        frame_tensors = current_frames
-        print(f"  - Multiple passes completed: {len(frame_tensors)} total frames generated")
-        
-        # CRITICAL FIX: Exclude start and end frames to prevent duplication
-        # frame_tensors contains [start_frame, intermediate_frames..., end_frame]
-        # We only want the intermediate frames for smooth transitions
-        if len(frame_tensors) > 2:
-            # Remove first frame (start) and last frame (end) to avoid duplication
-            intermediate_frames = frame_tensors[1:-1]
-            print(f"  - Generated {len(frame_tensors)} total frames, using {len(intermediate_frames)} intermediate frames")
-        else:
-            # If only 2 frames (start, end), generate at least one intermediate frame
-            intermediate_frames = frame_tensors[1:-1] if len(frame_tensors) > 1 else []
-            print(f"  - ⚠️ WARNING: Only {len(frame_tensors)} frames generated, using {len(intermediate_frames)} intermediate frames")
-        
-        # Save only the intermediate frames
-        print(f"  - Saving {len(intermediate_frames)} frames to {frames_dir}")
-        if len(intermediate_frames) == 0:
-            # No intermediate frames to save - create a minimal transition
-            print("  - ⚠️ No intermediate frames available, creating minimal transition video")
-            # Create a very short video with just one frame (duplicate of start frame)
-            save_tensor_as_image(frame_tensors[0], frames_dir / f'frame_00000.png', original_size=(h, w))
-            saved_frames = 1
-        else:
-            for i, frame_tensor in enumerate(intermediate_frames):
-                save_tensor_as_image(frame_tensor, frames_dir / f'frame_{i:05d}.png', original_size=(h, w))
-            saved_frames = len(intermediate_frames)
-        
-        print(f"  - Saved {saved_frames} frames, creating video with FFmpeg...")
+        try:
+            video_info = get_video_info(Path(video_path))
+            if not video_info:
+                raise Exception(f"Could not read video info from {video_path}")
             
-        # Create segment video with proper BT.709 color space metadata
-        cmd = [
-            'ffmpeg', '-y', '-r', str(fps), '-i', frames_dir / 'frame_%05d.png',
-            '-s', f'{w}x{h}', '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-            '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
-            '-color_primaries', 'bt709',
-            '-color_trc', 'bt709',
-            '-colorspace', 'bt709',
-            '-movflags', '+faststart', segment_path
-        ]
-        print(f"  - FFmpeg command: {' '.join(str(x) for x in cmd[:8])}...")
-        success, msg = run_ffmpeg_command(cmd)
-        if not success:
-            print(f"  - ❌ FFmpeg failed: {msg}")
-            raise Exception(f"FFmpeg error for segment {segment_path.name}: {msg}")
-        else:
-            print(f"  - ✅ FFmpeg completed successfully for {segment_path.name}")
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                raise Exception(f"Could not open video: {video_path}")
+            
+            frame_count = video_info['frame_count']
+            if position == 'last':
+                target_frame = frame_count - 1
+            else:  # first
+                target_frame = 0
+            
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ret, frame_bgr = cap.read()
+            cap.release()
+            
+            if not ret or frame_bgr is None:
+                raise Exception(f"Could not read {position} frame from {video_path}")
+            
+            # Convert BGR to RGB for PIL
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            frame_pil = Image.fromarray(frame_rgb)
+            
+            print(f"✅ Successfully extracted {position} frame: {frame_pil.size}")
+            return frame_pil
+            
+        except Exception as e:
+            print(f"❌ Frame extraction failed: {e}")
+            raise
+    
+    def _create_transition_segment(self, start_frame_pil, end_frame_pil, num_passes, segment_path, method=InterpolationMethod.IMAGE_INTERPOLATION):
+        """
+        Create transition video using specified interpolation method.
+        
+        Args:
+            start_frame_pil: Starting frame (PIL Image)
+            end_frame_pil: Ending frame (PIL Image) 
+            num_passes: Number of interpolation passes
+            segment_path: Output path for transition video
+            method: InterpolationMethod to use for transition creation
+        
+        Returns:
+            str: Path to created transition video
+        """
+        print(f"🎬 Creating transition segment: {segment_path.name}")
+        print(f"  - From frame: {start_frame_pil.size}")
+        print(f"  - To frame: {end_frame_pil.size}")
+        print(f"  - Passes: {num_passes}")
+        print(f"  - Method: {method.value}")
+        
+        try:
+            if method == InterpolationMethod.IMAGE_INTERPOLATION:
+                # Use ImageInterpolator service for proven interpolation logic
+                video_path, status_msg = self.image_interpolator.interpolate(
+                    img0_pil=start_frame_pil,
+                    img1_pil=end_frame_pil,
+                    num_passes=num_passes,
+                    fps=25,  # Fixed FPS for consistency
+                    use_disk_based=False  # Use memory-based for better quality
+                )
+                
+            elif method == InterpolationMethod.DISK_BASED:
+                # Use disk-based interpolation for memory efficiency
+                video_path, status_msg = self.image_interpolator.interpolate(
+                    img0_pil=start_frame_pil,
+                    img1_pil=end_frame_pil,
+                    num_passes=num_passes,
+                    fps=25,
+                    use_disk_based=True  # Use disk-based for memory efficiency
+                )
+                
+            else:
+                raise Exception(f"Unsupported interpolation method: {method}")
+            
+            if not video_path:
+                raise Exception(f"Interpolation failed: {status_msg}")
+            
+            # Move the generated video to our target location
+            import shutil
+            shutil.move(video_path, segment_path)
+            
+            if not segment_path.exists():
+                raise Exception(f"Transition segment not created: {segment_path}")
+            
+            segment_size = segment_path.stat().st_size
+            print(f"✅ Transition segment created: {segment_size} bytes")
+            print(f"   Method: {method.value}, Status: {status_msg}")
+            
+            return str(segment_path)
+            
+        except Exception as e:
+            print(f"❌ Transition creation failed: {e}")
+            raise
 
-    def interpolate(self, anchor_video_path, middle_video_path, end_video_path, num_passes, interp_duration_seconds, final_fps):
+    def interpolate(self, anchor_video_path, middle_video_path, end_video_path, num_passes, final_fps, method: Union[str, InterpolationMethod] = InterpolationMethod.IMAGE_INTERPOLATION):
+        """
+        Enhanced chained interpolation with configurable methods.
+        
+        Creates smooth transitions between three videos by:
+        1. Extracting boundary frames from each video
+        2. Using specified interpolation method to create high-quality transitions  
+        3. Concatenating: [video1] -> [transition1] -> [video2] -> [transition2] -> [video3]
+        
+        Args:
+            anchor_video_path: Path to first video
+            middle_video_path: Path to middle video
+            end_video_path: Path to final video
+            num_passes: Number of interpolation passes (affects transition duration)
+            final_fps: Target FPS for final video
+            method: Interpolation method to use (InterpolationMethod enum or string)
+        
+        Returns:
+            tuple: (video_path, status_message)
+        """
         if not all([anchor_video_path, middle_video_path, end_video_path]):
             raise Exception("Anchor video, middle video, and end video are all required.")
-        if interp_duration_seconds <= 0 or final_fps <= 0:
-            raise Exception("Durations and FPS must be positive.")
+        if num_passes <= 0 or final_fps <= 0:
+            raise Exception("Number of passes and FPS must be positive.")
+        
+        # Handle method parameter (string or enum)
+        if isinstance(method, str):
+            try:
+                method = InterpolationMethod(method)
+            except ValueError:
+                raise Exception(f"Invalid interpolation method: {method}. Available: {self.get_available_methods()}")
+        elif not isinstance(method, InterpolationMethod):
+            raise Exception(f"Method must be InterpolationMethod enum or string. Got: {type(method)}")
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         op_dir = CHAINED_TMP_DIR / f"chained_{timestamp}"
         op_dir.mkdir(parents=True)
         
+        print(f"🎬 Starting enhanced chained interpolation")
+        print(f"📁 Working directory: {op_dir}")
+        print(f"🔗 Chain: {Path(anchor_video_path).name} -> {Path(middle_video_path).name} -> {Path(end_video_path).name}")
+        print(f"⚙️ Interpolation method: {method.value}")
+        print(f"🔢 Passes: {num_passes} (duration controlled by passes, not fixed duration)")
+        
         try:
-            # Get video information for all three videos
+            # Validate all input videos
+            print("📊 Validating input videos...")
             anchor_info = get_video_info(Path(anchor_video_path))
             middle_info = get_video_info(Path(middle_video_path))
             end_info = get_video_info(Path(end_video_path))
@@ -112,225 +192,171 @@ class ChainedInterpolator:
             if not all([anchor_info, middle_info, end_info]):
                 raise Exception("Could not read properties from one or more videos.")
             
-            # Use middle video resolution as target (you could also use max resolution)
+            # Use middle video resolution as target
             target_w, target_h = middle_info['width'], middle_info['height']
+            print(f"🎯 Target resolution: {target_w}x{target_h}")
 
-            # Prepare directories
-            frames1_dir = op_dir / "frames1"  # anchor -> middle interpolation
-            frames2_dir = op_dir / "frames2"  # middle -> end interpolation
+            # Setup working directories
             segments_dir = op_dir / "segments"
-            for d in [frames1_dir, frames2_dir, segments_dir]:
-                d.mkdir()
+            segments_dir.mkdir()
 
-            # Extract frames from videos
-            print("Extracting key frames for interpolation...")
+            # Phase 1: Extract boundary frames using enhanced extraction
+            print("\n📸 Phase 1: Extracting boundary frames...")
             
-            # Get last frame of anchor video
-            cap_anchor = cv2.VideoCapture(anchor_video_path)
-            if not cap_anchor.isOpened():
-                raise Exception(f"Could not open anchor video: {anchor_video_path}")
-            cap_anchor.set(cv2.CAP_PROP_POS_FRAMES, anchor_info['frame_count'] - 1)
-            ret, anchor_last_bgr = cap_anchor.read()
-            cap_anchor.release()
-            if not ret or anchor_last_bgr is None:
-                raise Exception(f"Could not read last frame from anchor video")
-            anchor_last_pil = Image.fromarray(cv2.cvtColor(anchor_last_bgr, cv2.COLOR_BGR2RGB))
-            print(f"Extracted anchor video last frame: {anchor_last_pil.size}")
+            anchor_last_frame = self._extract_boundary_frames(anchor_video_path, 'last')
+            middle_first_frame = self._extract_boundary_frames(middle_video_path, 'first')
+            middle_last_frame = self._extract_boundary_frames(middle_video_path, 'last')
+            end_first_frame = self._extract_boundary_frames(end_video_path, 'first')
+            
+            print("✅ All boundary frames extracted successfully")
 
-            # Get first and last frame of middle video
-            cap_middle = cv2.VideoCapture(middle_video_path)
-            if not cap_middle.isOpened():
-                raise Exception(f"Could not open middle video: {middle_video_path}")
-            cap_middle.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, middle_first_bgr = cap_middle.read()
-            if not ret or middle_first_bgr is None:
-                raise Exception(f"Could not read first frame from middle video")
-            cap_middle.set(cv2.CAP_PROP_POS_FRAMES, middle_info['frame_count'] - 1)
-            ret, middle_last_bgr = cap_middle.read()
-            cap_middle.release()
-            if not ret or middle_last_bgr is None:
-                raise Exception(f"Could not read last frame from middle video")
-            middle_first_pil = Image.fromarray(cv2.cvtColor(middle_first_bgr, cv2.COLOR_BGR2RGB))
-            middle_last_pil = Image.fromarray(cv2.cvtColor(middle_last_bgr, cv2.COLOR_BGR2RGB))
-            print(f"Extracted middle video first frame: {middle_first_pil.size}")
-            print(f"Extracted middle video last frame: {middle_last_pil.size}")
+            # Phase 2: Create transition segments using ImageInterpolator
+            print(f"\n🎨 Phase 2: Creating transition segments with {num_passes} passes...")
+            
+            # Transition 1: anchor_last -> middle_first
+            transition1_path = segments_dir / "transition1.mp4"
+            print(f"Creating transition 1: {Path(anchor_video_path).name} -> {Path(middle_video_path).name}")
+            self._create_transition_segment(
+                anchor_last_frame, 
+                middle_first_frame, 
+                num_passes, 
+                transition1_path,
+                method
+            )
+            
+            # Transition 2: middle_last -> end_first  
+            transition2_path = segments_dir / "transition2.mp4"
+            print(f"Creating transition 2: {Path(middle_video_path).name} -> {Path(end_video_path).name}")
+            self._create_transition_segment(
+                middle_last_frame, 
+                end_first_frame, 
+                num_passes, 
+                transition2_path,
+                method
+            )
+            
+            print("✅ All transition segments created successfully")
 
-            # Get first frame of end video
-            cap_end = cv2.VideoCapture(end_video_path)
-            if not cap_end.isOpened():
-                raise Exception(f"Could not open end video: {end_video_path}")
-            cap_end.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, end_first_bgr = cap_end.read()
-            cap_end.release()
-            if not ret or end_first_bgr is None:
-                raise Exception(f"Could not read first frame from end video")
-            end_first_pil = Image.fromarray(cv2.cvtColor(end_first_bgr, cv2.COLOR_BGR2RGB))
-            print(f"Extracted end video first frame: {end_first_pil.size}")
-
-            # Calculate interpolation FPS - fixed at 25 FPS, passes control duration
-            num_frames = (2**num_passes)
-            # Use fixed 25 FPS but adjust duration based on passes
-            interp_fps = 25.0
-            actual_duration = num_frames / 25.0
-            print(f"Interpolation will create {num_frames} frames at 25 FPS = {actual_duration:.2f}s duration")
-
-            # Interpolation 1: Last frame of anchor video -> First frame of middle video
-            interp1_path = segments_dir / "interp1.mp4"
-            print(f"Generating interpolation 1: anchor last frame -> middle first frame")
-            self._generate_interpolation_segment(anchor_last_pil, middle_first_pil, num_passes, interp_fps, target_w, target_h, frames1_dir, interp1_path)
+            # Phase 3: Prepare main videos with consistent encoding
+            print(f"\n⚙️ Phase 3: Re-encoding main videos for consistency...")
             
-            # Validate interpolation 1 was created
-            if not interp1_path.exists():
-                raise Exception(f"Interpolation 1 failed: {interp1_path} not created")
-            interp1_size = interp1_path.stat().st_size
-            print(f"Interpolation 1 generated successfully: {interp1_size} bytes")
-            
-            # Small file is OK since we're now only generating intermediate frames
-            if interp1_size < 1000:  # Less than 1KB might indicate a problem
-                print(f"Warning: Interpolation 1 is very small ({interp1_size} bytes) - may have few intermediate frames")
-
-            # Interpolation 2: Last frame of middle video -> First frame of end video
-            interp2_path = segments_dir / "interp2.mp4"
-            print(f"🔍 DEBUG: Generating interpolation 2: middle last frame -> end first frame")
-            print(f"🔍 DEBUG: Middle last frame size: {middle_last_pil.size}")
-            print(f"🔍 DEBUG: End first frame size: {end_first_pil.size}")
-            print(f"🔍 DEBUG: Number of passes: {num_passes}, FPS: {interp_fps}")
-            print(f"🔍 DEBUG: Target dimensions: {target_w}x{target_h}")
-            
-            try:
-                self._generate_interpolation_segment(middle_last_pil, end_first_pil, num_passes, interp_fps, target_w, target_h, frames2_dir, interp2_path)
-                print(f"🔍 DEBUG: Interpolation 2 generation completed without exception")
-            except Exception as e:
-                print(f"❌ ERROR: Interpolation 2 generation failed: {e}")
-                raise
-            
-            # Validate interpolation 2 was created
-            if not interp2_path.exists():
-                raise Exception(f"❌ Interpolation 2 failed: {interp2_path} not created")
-            
-            interp2_size = interp2_path.stat().st_size
-            print(f"✅ Interpolation 2 generated successfully: {interp2_size} bytes")
-            
-            # Get video info for interpolation 2
-            interp2_info = get_video_info(interp2_path)
-            if interp2_info:
-                frame_count = interp2_info.get('frame_count', 'unknown')
-                duration = interp2_info.get('duration', 'unknown')
-                if duration != 'unknown':
-                    duration_str = f"{duration:.2f}s"
-                else:
-                    duration_str = "unknown"
-                print(f"🔍 DEBUG: Interpolation 2 video info: {frame_count} frames, {duration_str}")
-            else:
-                print(f"⚠️ WARNING: Could not read interpolation 2 video info")
-            
-            if interp2_size < 1000:  # Less than 1KB might indicate a problem
-                print(f"⚠️ WARNING: Interpolation 2 is very small ({interp2_size} bytes) - may have few intermediate frames")
-                # List frame files in the directory
-                frame_files = list(frames2_dir.glob("*.png"))
-                print(f"🔍 DEBUG: Found {len(frame_files)} frame files in {frames2_dir}")
-                for frame_file in sorted(frame_files)[:5]:  # Show first 5
-                    print(f"  - {frame_file.name} ({frame_file.stat().st_size} bytes)")
-
-            # Prepare all three videos with consistent resolution and frame rate
             anchor_reencoded_path = segments_dir / "anchor_reencoded.mp4"
             middle_reencoded_path = segments_dir / "middle_reencoded.mp4"
             end_reencoded_path = segments_dir / "end_reencoded.mp4"
             
+            # Use scaling filter for consistent dimensions
             vf_filter = f"scale=w={target_w}:h={target_h}:force_original_aspect_ratio=1,pad=w={target_w}:h={target_h}:x=(ow-iw)/2:y=(oh-ih)/2:color=black"
             
-            # Re-encode all videos with consistent settings
-            for input_path, output_path in [(anchor_video_path, anchor_reencoded_path), 
-                                          (middle_video_path, middle_reencoded_path), 
-                                          (end_video_path, end_reencoded_path)]:
-                print(f"Re-encoding {Path(input_path).name} -> {output_path.name}")
-                cmd = ['ffmpeg', '-y', '-i', input_path, '-vf', vf_filter, '-r', str(final_fps), 
-                      '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-pix_fmt', 'yuv420p',
-                      '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
-                      '-movflags', '+faststart', '-an', output_path]
+            for input_path, output_path, name in [
+                (anchor_video_path, anchor_reencoded_path, "anchor"), 
+                (middle_video_path, middle_reencoded_path, "middle"), 
+                (end_video_path, end_reencoded_path, "end")
+            ]:
+                print(f"Re-encoding {name} video: {Path(input_path).name}")
+                cmd = [
+                    'ffmpeg', '-y', '-i', input_path, 
+                    '-vf', vf_filter, 
+                    '-r', str(final_fps), 
+                    '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', 
+                    '-pix_fmt', 'yuv420p',
+                    '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
+                    '-movflags', '+faststart', '-an', output_path
+                ]
                 success, msg = run_ffmpeg_command(cmd)
                 if not success: 
-                    raise Exception(f"FFmpeg error re-encoding {Path(input_path).name}: {msg}")
+                    raise Exception(f"FFmpeg error re-encoding {name}: {msg}")
                 
-                # Validate re-encoded video was created
                 if not output_path.exists() or output_path.stat().st_size == 0:
-                    raise Exception(f"Re-encoded video failed: {output_path} not created or empty")
-                print(f"Re-encoded {output_path.name}: {output_path.stat().st_size} bytes")
+                    raise Exception(f"Re-encoded {name} video failed: {output_path}")
+                
+                file_size_mb = output_path.stat().st_size / (1024 * 1024)
+                print(f"✅ {name.capitalize()} video re-encoded: {file_size_mb:.1f} MB")
 
-            # Validate all files exist before concatenation
-            all_files = [anchor_reencoded_path, interp1_path, middle_reencoded_path, interp2_path, end_reencoded_path]
-            for file_path in all_files:
-                if not file_path.exists():
-                    raise Exception(f"Missing file for concatenation: {file_path}")
-                file_size = file_path.stat().st_size
-                if file_size == 0:
-                    raise Exception(f"Empty file for concatenation: {file_path}")
-                # Interpolation files can be small, but main videos should be substantial
-                if 'interp' not in file_path.name and file_size < 10000:  # Less than 10KB for main videos is suspicious
-                    print(f"Warning: Main video {file_path.name} is very small ({file_size} bytes)")
-
-            # Concatenate: anchor video + interpolation1 + middle video + interpolation2 + end video
-            concat_list_path = op_dir / "concat_list.txt"
-            with open(concat_list_path, 'w') as f:
-                f.write(f"file '{anchor_reencoded_path.resolve()}'\n")
-                f.write(f"file '{interp1_path.resolve()}'\n")
-                f.write(f"file '{middle_reencoded_path.resolve()}'\n")
-                f.write(f"file '{interp2_path.resolve()}'\n")
-                f.write(f"file '{end_reencoded_path.resolve()}'\n")
+            # Phase 4: Validate all segments before concatenation
+            print(f"\n🔍 Phase 4: Validating all segments...")
             
-            print(f"📋 Concatenation list created with 5 segments:")
-            
-            # Show detailed info for each segment
-            segments_info = [
-                (1, "Anchor video", anchor_reencoded_path),
-                (2, "Interpolation 1", interp1_path),
-                (3, "Middle video", middle_reencoded_path),
-                (4, "Interpolation 2", interp2_path),
-                (5, "End video", end_reencoded_path)
+            all_segments = [
+                ("Anchor video", anchor_reencoded_path),
+                ("Transition 1", transition1_path),
+                ("Middle video", middle_reencoded_path),
+                ("Transition 2", transition2_path),
+                ("End video", end_reencoded_path)
             ]
             
-            for num, name, path in segments_info:
+            for i, (name, path) in enumerate(all_segments, 1):
+                if not path.exists():
+                    raise Exception(f"Missing segment: {path}")
+                
                 file_size = path.stat().st_size
-                # Get video duration if possible
+                if file_size == 0:
+                    raise Exception(f"Empty segment: {path}")
+                
+                # Get video info
                 try:
                     video_info = get_video_info(path)
                     if video_info:
-                        duration_val = video_info.get('duration', None)
-                        duration = f"{duration_val:.2f}s" if duration_val is not None else "unknown"
-                        frame_count = video_info.get('frame_count', 'unknown')
+                        duration = video_info.get('duration', 0)
+                        frame_count = video_info.get('frame_count', 0)
+                        duration_str = f"{duration:.2f}s" if duration else "unknown"
                     else:
-                        duration = "unknown"
+                        duration_str = "unknown"
                         frame_count = "unknown"
-                except Exception as e:
-                    duration = "unknown"
+                except:
+                    duration_str = "unknown"
                     frame_count = "unknown"
                 
-                print(f"{num}. {name}: {path.name} ({file_size} bytes, {duration}, {frame_count} frames)")
+                file_size_mb = file_size / (1024 * 1024)
+                print(f"{i}. {name}: {file_size_mb:.1f} MB, {duration_str}, {frame_count} frames")
 
+            # Phase 5: Concatenate all segments
+            print(f"\n🔗 Phase 5: Concatenating final video...")
+            
+            concat_list_path = op_dir / "concat_list.txt"
+            with open(concat_list_path, 'w') as f:
+                for name, path in all_segments:
+                    f.write(f"file '{path.resolve()}'\n")
+            
             final_video_path = VIDEO_TMP_DIR / f"chained_output_{timestamp}.mp4"
-            # Concatenate with color space preservation
-            print(f"Starting concatenation to: {final_video_path}")
-            cmd_concat = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', concat_list_path, '-c', 'copy', '-r', str(final_fps), final_video_path]
+            
+            cmd_concat = [
+                'ffmpeg', '-y', '-f', 'concat', '-safe', '0', 
+                '-i', concat_list_path, 
+                '-c', 'copy', '-r', str(final_fps), 
+                final_video_path
+            ]
+            
             success, msg = run_ffmpeg_command(cmd_concat)
             if not success: 
-                raise Exception(f"FFmpeg error during concatenation: {msg}")
+                raise Exception(f"FFmpeg concatenation error: {msg}")
             
-            # Validate final output
+            # Final validation
             if not final_video_path.exists():
                 raise Exception(f"Final video not created: {final_video_path}")
             if final_video_path.stat().st_size == 0:
                 raise Exception(f"Final video is empty: {final_video_path}")
             
             final_size_mb = final_video_path.stat().st_size / (1024 * 1024)
-            print(f"🎬 Chained interpolation completed successfully!")
-            print(f"📁 Final video: {final_video_path.name} ({final_size_mb:.1f} MB)")
-            print(f"🔗 Structure: Anchor -> [Smooth Transition] -> Middle -> [Smooth Transition] -> End")
-            print(f"✅ Frame duplication eliminated - smooth transitions guaranteed!")
             
-            return str(final_video_path), "Chained video interpolation successful with smooth transitions."
+            # Get final video info
+            final_info = get_video_info(final_video_path)
+            if final_info:
+                total_duration = final_info.get('duration', 0)
+                total_frames = final_info.get('frame_count', 0)
+                duration_str = f"{total_duration:.2f}s" if total_duration else "unknown"
+                print(f"📊 Final video stats: {final_size_mb:.1f} MB, {duration_str}, {total_frames} frames")
+            
+            print(f"\n🎉 Enhanced chained interpolation completed successfully!")
+            print(f"📁 Output: {final_video_path.name}")
+            print(f"🔗 Structure: [Video1] -> [Smooth Transition] -> [Video2] -> [Smooth Transition] -> [Video3]")
+            print(f"✨ Enhanced with proven ImageInterpolator technology!")
+            
+            return str(final_video_path), f"Enhanced chained interpolation successful! Generated {final_size_mb:.1f} MB video with smooth image-to-image transitions."
         
         except Exception as e:
+            print(f"❌ Chained interpolation failed: {e}")
             raise e
         finally:
+            # Cleanup temporary directory
             if op_dir.exists():
-                shutil.rmtree(op_dir) 
+                shutil.rmtree(op_dir)
+                print(f"🧹 Cleaned up temporary directory: {op_dir}") 

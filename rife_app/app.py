@@ -211,12 +211,12 @@ def create_rife_ui():
                         ("Standard (Recursive)", "standard"),
                         ("Disk-Based (Best Quality)", "disk_based")
                     ],
-                    value="standard",
+                    value="disk_based",
                     label="Interpolation Method",
                     info="Choose interpolation approach: Standard (fastest), Disk-based (best quality, no motion blur)"
                 )
             # Method-specific controls
-            with gr.Row(visible=False) as disk_based_controls:
+            with gr.Row(visible=True) as disk_based_controls:
                 gr.Markdown("💡 **Disk-based mode**: Uses passes logic with constant memory usage. Same number of passes as standard mode, but stores frames on disk for memory efficiency.")
             
             # Memory usage estimation display
@@ -236,15 +236,29 @@ def create_rife_ui():
         # Tab 3: Chained Interpolation
         with gr.TabItem("3. Chained Video Interpolation"):
             gr.Markdown("### Chain multiple videos with smooth transitions")
+            gr.Markdown("**Enhanced Method Selection**: Choose interpolation method based on your needs")
             gr.Markdown("**Duration Control**: More passes create longer transition segments at 25 FPS")
+            gr.Markdown("Upload your videos in sequence from left to right:")
             with gr.Row():
-                with gr.Column():
-                    anchor_video_chained = gr.Video(label="Anchor Video (Start)")
-                    middle_video_chained = gr.Video(label="Middle Video")
-                    end_video_chained = gr.Video(label="End Video")
-            passes_chained_interp = gr.Slider(minimum=1, maximum=6, value=2, step=1, label="Number of Passes", info="Each pass doubles video duration at 25 FPS (up to 6 passes = 2.56s)")
-            interp_duration_chained = gr.Number(value=2.0, minimum=0.1, label="Interpolation Duration (s)")
-            main_video_fps_chained = gr.Number(value=DEFAULT_FPS, label="Final FPS")
+                anchor_video_chained = gr.Video(label="Anchor Video (Start)")
+                middle_video_chained = gr.Video(label="Middle Video")
+                end_video_chained = gr.Video(label="End Video")
+            
+            with gr.Row():
+                passes_chained_interp = gr.Slider(minimum=1, maximum=6, value=2, step=1, label="Number of Passes", info="Each pass doubles transition duration (2 passes = ~160ms, 6 passes = ~2.56s)")
+                main_video_fps_chained = gr.Number(value=DEFAULT_FPS, label="Final FPS")
+                
+            # Interpolation Mode Selection - matching Tab 2 format
+            interp_method_chained = gr.Radio(
+                choices=[
+                    ("Standard (Recursive)", "image_interpolation"),
+                    ("Disk-Based (Best Quality)", "disk_based")
+                ],
+                value="disk_based",
+                label="Interpolation Method",
+                info="Choose interpolation approach: Standard (fastest), Disk-based (best quality, no motion blur)"
+            )
+            
             btn_run_chained_interp = gr.Button("Generate Chained Video", variant="primary")
             vid_output_chained_interp = gr.Video(label="Chained Output Video")
             status_chained_interp = gr.Textbox(label="Status", interactive=False)
@@ -357,9 +371,18 @@ def create_rife_ui():
     )
 
     # Tab 3
+    def handle_chained_interpolation(anchor_video, middle_video, end_video, passes, fps, method):
+        """Handle chained interpolation with improved API."""
+        if not chained_interp:
+            return None, "Model not loaded"
+        try:
+            return chained_interp.interpolate(anchor_video, middle_video, end_video, passes, fps, method)
+        except Exception as e:
+            return None, f"Chained interpolation failed: {str(e)}"
+    
     btn_run_chained_interp.click(
-        lambda *args: chained_interp.interpolate(*args) if chained_interp else (None, "Model not loaded"),
-        inputs=[anchor_video_chained, middle_video_chained, end_video_chained, passes_chained_interp, interp_duration_chained, main_video_fps_chained],
+        handle_chained_interpolation,
+        inputs=[anchor_video_chained, middle_video_chained, end_video_chained, passes_chained_interp, main_video_fps_chained, interp_method_chained],
         outputs=[vid_output_chained_interp, status_chained_interp]
     )
     
