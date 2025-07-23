@@ -172,9 +172,9 @@ def handle_video_reencoding(video_path):
     return reencoded_video_path, status_message, encoding_info
 
 def create_rife_ui():
-    """Creates the Gradio UI for RIFE interpolation."""
+    """Creates the Gradio UI for video and image interpolation."""
     # --- Gradio Interface ---
-    gr.Markdown("# RIFE Video and Image Frame Interpolation")
+    gr.Markdown("# Video and Image Frame Interpolation")
     
     with gr.Tabs():
         # Tab 1: Frame Extraction
@@ -405,12 +405,30 @@ def create_rife_ui():
 
 
 if __name__ == '__main__':
-    with gr.Blocks(title="RIFE Interpolation", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="Frame Interpolation Tool", theme=gr.themes.Soft()) as demo:
         create_rife_ui()
+    
+    # --- Authentication ---
+    # Get credentials from environment variables with fallback to defaults
+    # Set these environment variables in your deployment (e.g., Coolify):
+    # - AUTH_USERNAME: Username for authentication
+    # - AUTH_PASSWORD: Password for authentication
+    AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "admin")
+    AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "goAVA_2025")
+
+    # Only enable authentication if both username and password are provided
+    if AUTH_USERNAME and AUTH_PASSWORD:
+        auth_creds = (AUTH_USERNAME, AUTH_PASSWORD)
+        print(f"Authentication enabled for user: {AUTH_USERNAME}")
+    else:
+        auth_creds = None
+        print("Authentication disabled - no credentials configured")
+    # --- End Authentication ---
     
     print("Launching Gradio interface...")
     demo.launch(
         server_port=7860,
         server_name="0.0.0.0",
         inbrowser=False,
+        auth=auth_creds, # Pass credentials tuple to enable authentication
     ) 
