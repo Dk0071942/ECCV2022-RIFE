@@ -59,14 +59,24 @@ The RIFE Docker app provides:
 ### Container fails to start
 - Ensure nvidia-container-toolkit is installed
 - Check GPU availability with `nvidia-smi`
+- Verify Docker has GPU support: `docker run --gpus all nvidia/cuda:12.6-runtime-ubuntu22.04 nvidia-smi`
+
+### Module not found errors (gradio, pillow, etc.)
+- Updated requirements.txt includes all necessary dependencies
+- Rebuild the container: `docker-compose build --no-cache`
 
 ### Out of memory errors
 - Reduce video resolution or frame count
 - Close other GPU-intensive applications
+- Try running with CPU fallback by setting environment variable: `-e CUDA_VISIBLE_DEVICES=""`
 
 ### FFmpeg not found
 - The Dockerfile includes FFmpeg installation
 - If issues persist, rebuild the container
+
+### Deprecated CUDA image warnings
+- Updated to use nvidia/cuda:12.6-cudnn-devel-ubuntu22.04 (current stable version)
+- If warnings persist, they're informational and won't affect functionality
 
 ## Performance Notes
 
