@@ -32,6 +32,12 @@ EXPOSE 7860
 # Set Gradio server configuration
 ENV GRADIO_SERVER_NAME="0.0.0.0"
 
+# Authentication Environment Variables
+# Set to empty strings to disable authentication (default for local development)
+# Override these in deployment to enable authentication
+ENV AUTH_USERNAME=""
+ENV AUTH_PASSWORD=""
+
 # Add healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:7860 || exit 1

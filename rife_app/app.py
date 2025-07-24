@@ -419,8 +419,8 @@ if __name__ == '__main__':
     # Set these environment variables in your deployment (e.g., Coolify):
     # - AUTH_USERNAME: Username for authentication
     # - AUTH_PASSWORD: Password for authentication
-    AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "admin")
-    AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "goAVA_2025")
+    AUTH_USERNAME = os.environ.get("AUTH_USERNAME", "")
+    AUTH_PASSWORD = os.environ.get("AUTH_PASSWORD", "")
 
     # Only enable authentication if both username and password are provided
     if AUTH_USERNAME and AUTH_PASSWORD:
