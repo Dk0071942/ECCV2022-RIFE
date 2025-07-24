@@ -26,6 +26,7 @@ def initialize_app():
         print("RIFE model loaded successfully for Gradio app.")
     except RuntimeError as e:
         print(f"Failed to load RIFE model at startup: {e}")
+        print("RIFE app will launch in degraded mode - interpolation features will be disabled.")
         model = None
     
     # Pre-check for FFmpeg
@@ -91,6 +92,9 @@ def handle_advanced_video_interpolation(
     """Handles video frame rate interpolation using multiple passes for optimal quality."""
     if not video_path:
         return None, "No video uploaded"
+    
+    if not video_interp:
+        return None, "❌ RIFE model not loaded. This may be due to missing GPU drivers or model files. Check deployment logs for details."
     
     output_dir = Path("./temp_gradio/interpolated_videos")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -176,6 +180,10 @@ def create_rife_ui():
     """Creates the Gradio UI for video and image interpolation."""
     # --- Gradio Interface ---
     gr.Markdown("# Video and Image Frame Interpolation")
+    
+    # Model status indicator
+    model_status = "✅ RIFE model loaded successfully" if image_interp else "❌ RIFE model failed to load - features disabled"
+    gr.Markdown(f"**Model Status**: {model_status}")
     
     with gr.Tabs():
         # Tab 1: Frame Extraction
@@ -359,7 +367,7 @@ def create_rife_ui():
     def handle_interpolation(img0, img1, num_passes, method):
         """Handle interpolation with different methods."""
         if not image_interp:
-            return None, "Model not loaded"
+            return None, "❌ RIFE model not loaded. This may be due to missing GPU drivers or model files. Check deployment logs for details."
         
         # Convert method to boolean flags for backward compatibility
         use_disk_based = (method == "disk_based")
@@ -380,7 +388,7 @@ def create_rife_ui():
     def handle_chained_interpolation(anchor_video, middle_video, end_video, passes, fps, method):
         """Handle chained interpolation with improved API."""
         if not chained_interp:
-            return None, "Model not loaded"
+            return None, "❌ RIFE model not loaded. This may be due to missing GPU drivers or model files. Check deployment logs for details."
         try:
             return chained_interp.interpolate(anchor_video, middle_video, end_video, passes, fps, method)
         except Exception as e:
@@ -411,6 +419,18 @@ def create_rife_ui():
 
 
 if __name__ == '__main__':
+    print("=" * 60)
+    print("🚀 Starting RIFE Gradio Application")
+    print(f"🐍 Python version: {sys.version}")
+    import torch
+    print(f"🔥 PyTorch version: {torch.__version__}")
+    print(f"🎯 CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
+    print(f"📁 Model directory: {os.path.abspath('./train_log')}")
+    print(f"🛠️ FFmpeg available: {shutil.which('ffmpeg') is not None}")
+    print("=" * 60)
+    
     with gr.Blocks(title="Frame Interpolation Tool", theme=gr.themes.Soft()) as demo:
         create_rife_ui()
     

@@ -38,8 +38,8 @@ ENV GRADIO_SERVER_NAME="0.0.0.0"
 ENV AUTH_USERNAME=""
 ENV AUTH_PASSWORD=""
 
-# Add healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+# Add healthcheck with more lenient startup time
+HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=5 \
     CMD curl -f http://localhost:7860 || exit 1
 
 # Entry point - run the RIFE Gradio app

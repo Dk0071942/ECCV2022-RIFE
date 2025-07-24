@@ -48,4 +48,7 @@ def setup_torch_device():
     torch.set_grad_enabled(False)
     if torch.cuda.is_available():
         torch.backends.cudnn.enabled = True
-        torch.backends.cudnn.benchmark = True 
+        torch.backends.cudnn.benchmark = True
+        print(f"CUDA is available. Using GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("CUDA not available. Using CPU mode.") 
