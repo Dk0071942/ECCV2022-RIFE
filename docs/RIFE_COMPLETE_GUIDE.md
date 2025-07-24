@@ -1,4 +1,4 @@
-# ECCV2022-RIFE Documentation
+# RIFE Complete Guide
 
 ## Overview
 
@@ -363,6 +363,174 @@ def interpolate_video(input_video, exp_factor):
 - **Batch Size**: 16-32 depending on resolution
 - **Training Data**: Vimeo90K dataset
 
+## UI Tab Structure
+
+### Tab 1: Select Frames from Video
+
+```mermaid
+graph TD
+    A[Tab 1: Select Frames from Video] --> B[Video Upload]
+    B --> C{Video Uploaded?}
+    C -->|Yes| D[get_video_info]
+    C -->|No| E[Display: Video not loaded]
+    D --> F[Display Video Info]
+    D --> G[Enable Frame Selection]
+    G --> H[Start Frame Input]
+    G --> I[End Frame Input]
+    H --> J[Extract Frames Button]
+    I --> J
+    J --> K[handle_frame_extraction]
+    K --> L{Valid Frame Range?}
+    L -->|No| M[Error: Invalid frames]
+    L -->|Yes| N[extract_frames]
+    N --> O[Display Start Frame]
+    N --> P[Display End Frame]
+    N --> Q[Auto-populate Tab 2]
+    Q --> R[End Frame → First Image]
+    Q --> S[Start Frame → Second Image]
+```
+
+### Tab 2: Interpolate Between Images
+
+```mermaid
+graph TD
+    A[Tab 2: Interpolate Between Images] --> B[Image Input Section]
+    B --> C[First Image/Source]
+    B --> D[Second Image/Target]
+    
+    E[Configuration] --> F[Number of Passes: 1-6]
+    E --> G[Interpolation Method]
+    
+    G --> H{Method Selection}
+    H -->|Standard| I[Recursive Mode]
+    H -->|Disk-Based| J[Best Quality Mode]
+    
+    F --> K[Memory Estimation]
+    C --> K
+    D --> K
+    
+    L[Generate Button] --> M{Images Loaded?}
+    M -->|No| N[Error: Upload images]
+    M -->|Yes| O[ImageInterpolator.interpolate]
+    
+    O --> P{Mode Check}
+    P -->|Disk-Based| Q[Constant Memory Usage]
+    P -->|Standard| R[Recursive Processing]
+    
+    Q --> S[Store frames on disk]
+    R --> T[Process in memory]
+    
+    S --> U[Generate Video @ 25 FPS]
+    T --> U
+    
+    U --> V[Output Video]
+    U --> W[Status Message]
+```
+
+### Tab 3: Chained Video Interpolation
+
+```mermaid
+graph TD
+    A[Tab 3: Chained Video Interpolation] --> B[Video Inputs]
+    B --> C[Anchor Video/Start]
+    B --> D[Middle Video]
+    B --> E[End Video]
+    
+    F[Configuration] --> G[Number of Passes]
+    F --> H[Final FPS]
+    F --> I[Interpolation Method]
+    
+    I --> J{Method Choice}
+    J -->|Standard| K[image_interpolation]
+    J -->|Disk-Based| L[disk_based]
+    
+    M[Generate Button] --> N[ChainedInterpolator.interpolate]
+    
+    N --> O[Extract transition frames]
+    O --> P[Anchor last → Middle first]
+    O --> Q[Middle last → End first]
+    
+    P --> R[Generate transition 1]
+    Q --> S[Generate transition 2]
+    
+    R --> T[Merge Videos]
+    S --> T
+    T --> U[Anchor + Trans1 + Middle + Trans2 + End]
+    
+    U --> V[Output Chained Video]
+    U --> W[Status Message]
+```
+
+### Tab 4: Video Interpolation
+
+```mermaid
+graph TD
+    A[Tab 4: Video Interpolation] --> B[Video Upload]
+    B --> C[Number of Passes: 1-4]
+    
+    C --> D[Pass Information]
+    D --> E[1 pass = 2x FPS]
+    D --> F[2 passes = 4x FPS]
+    D --> G[3 passes = 8x FPS]
+    D --> H[4 passes = 16x FPS]
+    
+    I[Interpolate Button] --> J[handle_advanced_video_interpolation]
+    
+    J --> K[Initialize output directory]
+    K --> L[Loop through passes]
+    
+    L --> M{For each pass}
+    M --> N[main_interpolate with exp=1]
+    N --> O[2x frame rate increase]
+    O --> P[Use output as next input]
+    P -->|More passes?| M
+    P -->|Done| Q[Final multiplier = 2^passes]
+    
+    Q --> R[Output Video]
+    Q --> S[Status: X passes → Yx frame rate]
+    
+    T[Key Features] --> U[Maintains video duration]
+    T --> V[Increases frame rate only]
+    T --> W[Multiple 2x passes for quality]
+```
+
+### Tab 5: Video Re-encoding
+
+```mermaid
+graph TD
+    A[Tab 5: Video Re-encoding] --> B[Video Upload]
+    B --> C[Re-encode Button]
+    
+    C --> D[handle_video_reencoding]
+    D --> E[Log Input Details]
+    E --> F[Type checking]
+    E --> G[Representation logging]
+    E --> H[Boolean evaluation]
+    
+    D --> I{Video exists?}
+    I -->|No| J[Error: No video uploaded]
+    I -->|Yes| K[SimpleVideoReencoder.reencode_video]
+    
+    K --> L[FFmpeg Processing]
+    L --> M[Codec: h264]
+    L --> N[Profile: high]
+    L --> O[Pixel Format: yuv420p]
+    L --> P[Preset: medium]
+    L --> Q[Quality: CRF 18]
+    L --> R[Color Space: BT.709]
+    
+    M --> S[Generate output path]
+    N --> S
+    O --> S
+    P --> S
+    Q --> S
+    R --> S
+    
+    S --> T[Output Video]
+    S --> U[Status Message]
+    S --> V[Encoding Info Display]
+```
+
 ## File Structure Reference
 
 ```
@@ -405,11 +573,110 @@ ECCV2022-RIFE/
 │       ├── Vimeo90K.py             # Vimeo90K evaluation
 │       ├── HD.py                   # HD dataset evaluation
 │       └── MiddleBury_Other.py     # MiddleBury evaluation
+├── 📚 Documentation
+│   └── docs/                       # Organized documentation
+│       ├── RIFE_COMPLETE_GUIDE.md  # This comprehensive guide
+│       ├── DEPLOYMENT_GUIDE.md     # Docker and deployment
+│       ├── TECHNICAL_FIXES.md      # Color space and tensor fixes
+│       └── QUALITY_AND_OPTIMIZATION.md # Quality analysis and optimization
 └── 🎬 Demo & Assets
     ├── demo/                       # Demo images and GIFs
     ├── docker/                     # Docker deployment
     └── temp_gradio/               # Temporary processing files
 ```
+
+## Integration Points
+
+### 1. Gradio Web Interface
+- RIFE functionality accessible through main LatentSync interface
+- Seamless workflow: Lip-sync → Frame Interpolation → Enhanced Video
+- Real-time progress tracking and quality assessment
+
+### 2. API Integration
+```python
+# Main integration point in gradio_app.py
+from rife_app.run_interpolation import main_interpolate as run_video_interpolation
+
+def interpolate_video(input_video, exp_factor):
+    return run_video_interpolation(
+        input_video_path=input_video,
+        output_dir_path="./temp_gradio/interpolated_videos/",
+        exp=exp_factor,
+        use_fp16=True
+    )
+```
+
+### 3. Service Architecture
+- **VideoInterpolator**: Core service class for video processing
+- **ImageInterpolator**: Image-to-image interpolation
+- **ChainedInterpolator**: Multi-stage video processing
+- **SimpleVideoReencoder**: Video format conversion
+- **Configuration**: Centralized settings management
+
+## Technical Capabilities
+
+### Frame Interpolation Factors
+- **2X (exp=1)**: Double the frame rate - **Recommended for quality**
+- **4X (exp=2)**: Quadruple the frame rate - Good balance
+- **8X (exp=3)**: 8 times the frame rate - Quality trade-offs
+- **16X (exp=4)**: 16 times the frame rate - Specialized use
+
+### Performance Specifications
+- **Speed**: 30+ FPS for 2X 720p interpolation on RTX 2080 Ti
+- **Quality**: PSNR 35.6+, SSIM 0.97+ on standard benchmarks
+- **Memory**: 4-6GB VRAM for HD processing
+- **Resolution**: Supports up to 4K with scale adjustment
+
+### Optimization Features
+- **Half Precision (FP16)**: Reduced memory usage
+- **Scale Factors**: Adjustable processing resolution (0.5-2.0)
+- **Test Time Augmentation**: Enhanced quality mode
+- **Batch Processing**: Multiple frame pairs simultaneously
+
+## Configuration Options
+
+### Available Parameters
+- **Interpolation Factor (exp)**: 2^exp multiplication of frames (1-4)
+- **Model Scale**: Processing resolution adjustment (0.5-2.0)
+- **Half Precision**: Memory optimization toggle
+- **Test Time Augmentation**: Quality enhancement mode
+
+### Recommended Settings
+
+#### HD Video (720p-1080p)
+- Scale: 1.0 (default)
+- FP16: Enabled
+- Interpolation: 2X for best quality
+
+#### 4K Video
+- Scale: 0.5 (memory efficiency)
+- FP16: Enabled
+- Interpolation: 2X recommended
+
+#### Quality Priority
+- Enable TTA (Test Time Augmentation)
+- Use multiple 2X passes instead of high factors
+- Higher resolution processing
+
+#### Speed Priority
+- Scale: 0.5
+- Disable TTA
+- Use FP16
+- Single interpolation pass
+
+## Use Cases
+
+### Primary Applications
+1. **Slow Motion Effects**: Create cinematic slow-motion from standard frame rate videos
+2. **Frame Rate Enhancement**: Improve temporal smoothness of lip-synced content
+3. **Video Post-Processing**: Professional quality enhancement workflow
+4. **Content Creation**: Generate smooth interpolated sequences for media production
+
+### Workflow Integration
+- **Post-Lip-Sync Processing**: Apply frame interpolation after lip synchronization
+- **Quality Enhancement**: Improve temporal smoothness without audio sync issues
+- **Creative Effects**: Generate high-frame-rate content for artistic purposes
+- **Professional Video**: Enhance commercial video content quality
 
 ## Optimization Opportunities
 
@@ -430,5 +697,48 @@ ECCV2022-RIFE/
 2. **GPU Memory Management**: Dynamic allocation
 3. **Error Handling**: Robust failure recovery
 4. **User Experience**: Progress tracking, preview generation
+
+## Quick Start Guide
+
+### Web Interface
+1. Access through LatentSync Gradio interface
+2. Upload lip-synced video
+3. Select interpolation factor (recommend 2X)
+4. Configure quality settings
+5. Process and download enhanced video
+
+### Command Line
+```bash
+# Direct processing
+python inference_video.py --input video.mp4 --exp 1 --output enhanced.mp4
+
+# Via rife_app
+python rife_app/run_interpolation.py --input video.mp4 --exp 1
+```
+
+### API Integration
+```python
+from rife_app.run_interpolation import main_interpolate
+
+result = main_interpolate(
+    input_video_path="input.mp4",
+    output_dir_path="./output/",
+    exp=1,  # 2X interpolation
+    use_fp16=True
+)
+```
+
+## Summary
+
+The RIFE integration successfully extends LatentSync's capabilities by adding state-of-the-art frame interpolation functionality. This creates a comprehensive video processing pipeline that combines audio-driven lip synchronization with temporal enhancement, providing users with professional-grade video processing tools in a unified interface.
+
+The integration maintains system ease of use while adding powerful capabilities for content creators, researchers, and video processing applications. The modular architecture ensures both components can be used independently or together, providing maximum flexibility for different use cases.
+
+### Key Benefits
+- **Professional Quality**: State-of-the-art frame interpolation
+- **Seamless Integration**: Works perfectly with LatentSync workflow
+- **Flexible Configuration**: Multiple quality and performance options
+- **Comprehensive Documentation**: Complete technical and usage guides
+- **Future-Ready**: Designed for extensibility and enhancement
 
 This documentation provides comprehensive understanding of the ECCV2022-RIFE component within the LatentSync ecosystem, including detailed architecture diagrams, integration patterns, and technical specifications for enhanced video frame interpolation capabilities.
