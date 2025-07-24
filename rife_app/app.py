@@ -143,13 +143,14 @@ def update_memory_estimation(interpolation_method, num_passes, img0, img1):
     except Exception as e:
         return f"Estimation error: {str(e)}"
 
-def handle_video_reencoding(video_path):
+def handle_video_reencoding(video_path, force_frame_based_reencoding):
     """Simple video re-encoding handler with comprehensive input logging."""
     print("=" * 60)
     print("🎬 GRADIO HANDLER - Video Re-encoding Started")
     print(f"🔍 GRADIO INPUT TYPE: {type(video_path)}")
     print(f"🔍 GRADIO INPUT REPR: {repr(video_path)}")
     print(f"🔍 GRADIO INPUT BOOL: {bool(video_path)}")
+    print(f"🔄 FORCE FRAME-BASED REENCODING: {force_frame_based_reencoding}")
     
     if hasattr(video_path, '__dict__'):
         print(f"🔍 GRADIO INPUT VARS: {vars(video_path)}")
@@ -160,8 +161,8 @@ def handle_video_reencoding(video_path):
     
     print("🔄 GRADIO HANDLER - Calling reencoder...")
     
-    # Simple re-encoding call
-    reencoded_video_path, status_message = video_reencoder.reencode_video(video_path)
+    # Re-encoding call with force parameter
+    reencoded_video_path, status_message = video_reencoder.reencode_video(video_path, force_frame_based_reencoding)
     
     print(f"✅ GRADIO HANDLER - Reencoder returned: {reencoded_video_path is not None}")
     print("=" * 60)
@@ -297,6 +298,11 @@ def create_rife_ui():
                 with gr.Column(scale=1):
                     gr.Markdown("### Input")
                     video_input_reencoding = gr.Video(label="Upload Video to Re-encode")
+                    force_reencoding_checkbox = gr.Checkbox(
+                        label="Use frame-based reencoding (extract frames)", 
+                        value=True,
+                        info="Check this to use frame extraction method for perfect color consistency. Unchecked = faster direct reencoding. Checked = slower frame-based reencoding with color analysis."
+                    )
                     reencode_button = gr.Button("🔄 Re-encode Video", variant="primary", size="lg")
                     
                 with gr.Column(scale=1):
@@ -396,7 +402,7 @@ def create_rife_ui():
     # Tab 5: Video Re-encoding
     reencode_button.click(
         handle_video_reencoding,
-        inputs=[video_input_reencoding],
+        inputs=[video_input_reencoding, force_reencoding_checkbox],
         outputs=[video_output_reencoding, status_text_reencoding, encoding_info_display]
     )
     
