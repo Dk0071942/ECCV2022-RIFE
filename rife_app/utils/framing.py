@@ -7,17 +7,32 @@ from torch.nn import functional as F
 from typing import Tuple, Optional
 
 def get_video_info(video_path: Path) -> Optional[dict]:
-    """Reads video file and returns properties."""
+    """Reads video file and returns enhanced properties with temporal analysis."""
     try:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             return None
         
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Enhanced temporal information
+        duration = frame_count / fps if fps > 0 else 0
+        
+        # Video format detection for encoding optimization
+        fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+        codec_fourcc = chr(fourcc & 0xFF) + chr((fourcc >> 8) & 0xFF) + chr((fourcc >> 16) & 0xFF) + chr((fourcc >> 24) & 0xFF)
+        
         info = {
-            "frame_count": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
-            "fps": cap.get(cv2.CAP_PROP_FPS),
-            "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            "frame_count": frame_count,
+            "fps": fps,
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "codec": codec_fourcc,
+            "aspect_ratio": width / height if height > 0 else 1.0
         }
         cap.release()
         return info
@@ -54,6 +69,137 @@ def extract_frames(video_path: Path, start_frame: int, end_frame: int) -> Tuple[
     
     cap.release()
     return pil_start_frame, pil_end_frame
+
+def extract_precise_boundary_frame(video_path: Path, position: str = 'last', validate_quality: bool = True) -> Optional[Image.Image]:
+    """
+    Frame-perfect boundary extraction with quality validation.
+    
+    Args:
+        video_path: Path to video file
+        position: 'first' or 'last' frame to extract
+        validate_quality: Perform frame quality checks
+    
+    Returns:
+        PIL.Image: High-quality extracted frame with validation
+    """
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise Exception(f"Cannot open video: {video_path}")
+        
+        # Get video properties for precise frame targeting
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        
+        if frame_count <= 0:
+            raise Exception(f"Invalid frame count: {frame_count}")
+        
+        # Calculate precise frame position
+        if position == 'last':
+            target_frame = frame_count - 1
+        elif position == 'first':
+            target_frame = 0
+        else:
+            raise Exception(f"Invalid position: {position}. Use 'first' or 'last'")
+        
+        # Seek to precise frame position
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        
+        # Verify actual position after seek
+        actual_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        if abs(actual_pos - target_frame) > 1:  # Allow 1 frame tolerance
+            print(f"⚠️ Seek precision warning: target={target_frame}, actual={actual_pos}")
+        
+        # Extract frame with error handling
+        ret, frame_bgr = cap.read()
+        cap.release()
+        
+        if not ret or frame_bgr is None:
+            raise Exception(f"Failed to read {position} frame at position {target_frame}")
+        
+        # Convert BGR to RGB for PIL
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame_pil = Image.fromarray(frame_rgb)
+        
+        # Optional quality validation
+        if validate_quality:
+            # Check for black frames or corruption
+            frame_array = np.array(frame_pil)
+            mean_brightness = np.mean(frame_array)
+            
+            if mean_brightness < 5:  # Likely black frame
+                print(f"⚠️ Potential black frame detected (brightness: {mean_brightness:.1f})")
+            elif mean_brightness > 250:  # Likely white/overexposed frame  
+                print(f"⚠️ Potential overexposed frame detected (brightness: {mean_brightness:.1f})")
+        
+        return frame_pil
+        
+    except Exception as e:
+        print(f"❌ Frame extraction failed: {e}")
+        return None
+
+def validate_temporal_alignment(video_paths: list, target_fps: float) -> dict:
+    """
+    Validates temporal alignment across multiple videos for concatenation.
+    
+    Args:
+        video_paths: List of video file paths
+        target_fps: Target FPS for final output
+    
+    Returns:
+        dict: Alignment analysis with recommendations
+    """
+    alignment_info = {
+        "videos": [],
+        "fps_consistent": True,
+        "resolution_consistent": True,
+        "recommendations": []
+    }
+    
+    reference_fps = None
+    reference_resolution = None
+    
+    for i, video_path in enumerate(video_paths):
+        info = get_video_info(Path(video_path))
+        if not info:
+            alignment_info["recommendations"].append(f"Cannot read video {i+1}: {Path(video_path).name}")
+            continue
+        
+        video_analysis = {
+            "path": str(video_path),
+            "fps": info["fps"],
+            "resolution": (info["width"], info["height"]),
+            "duration": info["duration"],
+            "frame_count": info["frame_count"],
+            "needs_fps_conversion": False,
+            "needs_resolution_conversion": False
+        }
+        
+        # FPS consistency check
+        if reference_fps is None:
+            reference_fps = info["fps"]
+        elif abs(info["fps"] - reference_fps) > 0.1:  # 0.1 FPS tolerance
+            alignment_info["fps_consistent"] = False
+            video_analysis["needs_fps_conversion"] = True
+        
+        # Resolution consistency check
+        current_resolution = (info["width"], info["height"])
+        if reference_resolution is None:
+            reference_resolution = current_resolution
+        elif current_resolution != reference_resolution:
+            alignment_info["resolution_consistent"] = False
+            video_analysis["needs_resolution_conversion"] = True
+        
+        alignment_info["videos"].append(video_analysis)
+    
+    # Generate recommendations
+    if not alignment_info["fps_consistent"]:
+        alignment_info["recommendations"].append(f"FPS standardization needed (target: {target_fps} fps)")
+    
+    if not alignment_info["resolution_consistent"]:
+        alignment_info["recommendations"].append(f"Resolution standardization needed (reference: {reference_resolution})")
+    
+    return alignment_info
 
 def pil_to_tensor(img: Image.Image, device) -> torch.Tensor:
     """Converts a PIL Image to a PyTorch tensor.
