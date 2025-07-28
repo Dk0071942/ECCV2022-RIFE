@@ -386,11 +386,19 @@ def create_rife_ui():
 
     # Tab 3
     def handle_chained_interpolation(anchor_video, middle_video, end_video, passes, fps, method):
-        """Handle chained interpolation with improved API."""
+        """Handle chained interpolation with exact Tab 2 quality."""
         if not chained_interp:
             return None, "❌ RIFE model not loaded. This may be due to missing GPU drivers or model files. Check deployment logs for details."
         try:
-            return chained_interp.interpolate(anchor_video, middle_video, end_video, passes, fps, method)
+            # Determine use_disk_based from method selection (matches Tab 2 logic)
+            use_disk_based = (method == "disk_based")
+            
+            # Pass all parameters including use_disk_based for perfect Tab 2 quality
+            return chained_interp.interpolate(
+                anchor_video, middle_video, end_video, 
+                passes, fps, method, 
+                use_disk_based=use_disk_based  # ✅ Pass Tab 2 quality parameter
+            )
         except Exception as e:
             return None, f"Chained interpolation failed: {str(e)}"
     
