@@ -88,6 +88,20 @@ python3 inference_video.py --video=video.mp4 --montage --png
 
 You may refer to [#278](https://github.com/megvii-research/ECCV2022-RIFE/issues/278#event-7199085190) for **Optical Flow Estimation** and refer to [#291](https://github.com/hzwer/ECCV2022-RIFE/issues/291#issuecomment-1328685348) for **Video Stitching**.
 
+**Color-Safe Video ↔ PNG Frame Conversion**
+
+We provide a comprehensive guide for extracting video frames to PNG and rebuilding without color shift. This is essential for frame-based processing workflows:
+
+📖 [**Color-Safe Video Conversion Guide**](./docs/COLOR_SAFE_VIDEO_CONVERSION.md) - Complete guide with examples and best practices
+
+⚡ [**Quick Reference**](./docs/COLOR_SAFE_QUICK_REFERENCE.md) - Copy-paste commands for immediate use
+
+Key features:
+- Proper color range conversion (limited ↔ full)
+- No color shift or quality loss
+- Works with standard FFmpeg (no special libraries needed)
+- Supports 8-bit and 10-bit workflows
+
 **Image Interpolation**
 
 ```

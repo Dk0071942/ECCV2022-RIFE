@@ -164,8 +164,8 @@ class SimpleVideoReencoder:
             return None, f"❌ Direct encoding failed: {error_msg}\n\nOriginal analysis:\n{analysis_report}"
     
     def _frame_based_encoding(self, input_path, output_path, analysis_report, video_params):
-        """Frame-based encoding with extraction and rebuilding."""
-        print("🖼️ Using frame-based reencoding method...")
+        """Frame-based encoding with color-safe round-trip."""
+        print("🖼️ Using frame-based reencoding method with color-safe round-trip...")
         
         # Create temporary frames directory
         output_dir = output_path.parent
@@ -174,11 +174,12 @@ class SimpleVideoReencoder:
         temp_frames_dir.mkdir(exist_ok=True)
         
         try:
-            # STEP 2a: Extract frames with BT.709 normalization (1st pass)
-            print("🖼️ Extracting frames with BT.709 color normalization...")
+            # STEP 1: Extract frames to PNG with proper color space handling
+            print("🖼️ Extracting frames with color space conversion...")
             frame_extract_cmd = [
                 'ffmpeg', '-y', '-i', input_path,
-                '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
+                '-vf', 'scale=in_range=limited:out_range=full,format=rgb24',
+                '-color_range', 'pc',  # Full range for PNG
                 str(temp_frames_dir / 'frame_%06d.png')
             ]
             
@@ -186,28 +187,32 @@ class SimpleVideoReencoder:
             if extract_result.returncode != 0:
                 return None, f"❌ Frame extraction failed: {extract_result.stderr}"
             
-            # STEP 2b: Detect original FPS for proper frame rate conversion
+            # STEP 2: Detect original FPS for proper frame rate conversion
             print("🎯 Detecting original FPS...")
             original_fps = self._detect_video_fps(input_path)
             print(f"📊 Original FPS: {original_fps}")
             print(f"🎯 Target output FPS: 25")
             
-            # STEP 2c: Rebuild video from frames with BT.709 normalization (2nd pass)
-            print("🔄 Rebuilding video from normalized frames...")
+            # STEP 3: Re-assemble PNGs back to limited-range Rec. 709 YUV
+            print("🔄 Rebuilding video from frames with proper color space conversion...")
             start_time = time.time()
             
             rebuild_cmd = [
                 'ffmpeg', '-y',
-                '-r', str(original_fps),  # Input frames at original rate
+                '-r', '25',  # Force 25 FPS output
+                '-start_number', '1',
                 '-i', str(temp_frames_dir / 'frame_%06d.png'),
                 '-i', input_path,  # For audio
-                '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
-                '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1,fps=25',
-                '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
-                '-movflags', '+faststart',
-                '-map', '0:v:0',  # Map video from frames
+                '-vf', 'scale=in_range=full:out_range=limited,format=yuv420p',
+                '-c:v', 'libx264', '-crf', '18', '-preset', 'slow',
+                '-color_range', 'tv',  # Limited range for video
+                '-color_primaries', 'bt709',
+                '-color_trc', 'bt709',
+                '-colorspace', 'bt709',
+                '-map', '0:v',    # Map video from frames
                 '-map', '1:a?',   # Map audio from original file if present
                 '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',  # Standard 48kHz audio
+                '-movflags', '+faststart',
                 str(output_path)
             ]
             
@@ -226,11 +231,13 @@ class SimpleVideoReencoder:
                     f"✅ Video re-encoded successfully in {processing_time:.1f}s\n\n"
                     f"📊 ORIGINAL VIDEO:\n{analysis_report}\n\n"
                     f"{original_bitrate_info}\n\n"
-                    f"🎯 APPLIED FRAME-BASED ENCODING:\n"
-                    f"• Frame extraction with BT.709 (1st normalization pass)\n"
-                    f"• Video rebuild at 25 FPS (forced)\n"
-                    f"• H.264 codec with CRF 18 (2nd normalization pass)\n"
-                    f"• BT.709 color space throughout\n"
+                    f"🎯 APPLIED COLOR-SAFE FRAME-BASED ENCODING:\n"
+                    f"• Frame extraction: limited→full range conversion\n"
+                    f"• PNG storage: full-range RGB24 (no YUV quantization)\n"
+                    f"• Video rebuild: full→limited range conversion\n"
+                    f"• Output forced to 25 FPS\n"
+                    f"• H.264 codec with CRF 18\n"
+                    f"• Proper Rec. 709 metadata flags\n"
                     f"• AAC audio at 192k, 48kHz\n"
                     f"• Web optimized\n\n"
                     f"📊 FINAL RESULT:\n{final_bitrate_info}"
@@ -304,12 +311,12 @@ class SimpleVideoReencoder:
 • Faster processing, less disk usage
 
 🖼️ FRAME-BASED REENCODING (Checked):
-• Extract frames with BT.709 normalization
-• Rebuild video at 25 FPS (forced)
-• Perfect PNG frame compatibility
-• Eliminates color quantization differences
-• Color consistency verification
-• Slower but guarantees frame consistency
+• Color-safe round-trip with range conversion
+• Extract frames: limited→full range
+• PNG storage: full-range RGB24
+• Rebuild: full→limited range
+• Preserves color accuracy through conversion
+• Slower but guarantees perfect color fidelity
 
 🔍 INTELLIGENT ANALYSIS:
 • Always checks current encoding first

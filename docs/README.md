@@ -121,6 +121,16 @@ graph LR
 - [Precision Handling](./TECHNICAL_FIXES.md#precision-optimization-strategies)
 - [Performance Tuning](./TECHNICAL_FIXES.md#performance-impact)
 
+### Video Processing
+- [🎨 **Color-Safe Video ↔ PNG Conversion**](./COLOR_SAFE_VIDEO_CONVERSION.md) **NEW**
+  - Complete guide for frame extraction without color shift
+  - Works with standard FFmpeg (no special libraries)
+  - Supports 8-bit and 10-bit workflows
+- [⚡ **Quick Reference**](./COLOR_SAFE_QUICK_REFERENCE.md) **NEW**
+  - Copy-paste commands for immediate use
+  - Common pitfalls and solutions
+  - Ready-to-use scripts
+
 ### Deployment & Scale
 - [Container Architecture](./DEPLOYMENT_GUIDE.md#docker-deployment-recommended)
 - [Production Setup](./DEPLOYMENT_GUIDE.md#production-deployment)
