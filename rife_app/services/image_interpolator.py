@@ -29,15 +29,15 @@ class ImageInterpolator:
             # Prepare tensors
             img0_tensor = pil_to_tensor(img0_pil, DEVICE)
             
-            # Pad the first image and get its new dimensions
-            img0_padded, (h, w) = pad_tensor_for_rife(img0_tensor)
+            # SYSTEMATIC FIX: Use centered padding to eliminate 16-pixel shift
+            img0_padded, (h, w, pad_top, pad_left) = pad_tensor_for_rife(img0_tensor, center_padding=True)
             
-            # Pad the second image, ensuring it matches the first one's padding exactly
+            # Pad the second image using the same centered padding approach
             img1_tensor = pil_to_tensor(img1_pil, DEVICE)
-            ph = img0_padded.shape[2]
-            pw = img0_padded.shape[3]
-            padding = (0, pw - img1_tensor.shape[3], 0, ph - img1_tensor.shape[2])
-            img1_padded = F.pad(img1_tensor, padding)
+            img1_padded, _ = pad_tensor_for_rife(img1_tensor, center_padding=True)
+            
+            # Store original size with padding coordinates for precise cropping
+            original_size = (h, w, pad_top, pad_left)
 
             # Generate frames using selected method
             if use_disk_based:
@@ -78,10 +78,10 @@ class ImageInterpolator:
                 duration_seconds = total_frames / 25.0
                 interpolation_method = f"multiple passes ({num_passes} passes, {total_frames} frames, {duration_seconds:.2f}s at 25 FPS)"
 
-            # Save frames
+            # Save frames using centered coordinates for precise alignment
             for i, frame_tensor in enumerate(frame_tensors):
                 frame_path = frames_dir / f'frame_{i:05d}.png'
-                save_tensor_as_image(frame_tensor, frame_path, original_size=(h, w))
+                save_tensor_as_image(frame_tensor, frame_path, original_size)
 
             # Create video with proper BT.709 color space metadata
             output_video_path = VIDEO_TMP_DIR / f"std_slomo_{timestamp}.mp4"

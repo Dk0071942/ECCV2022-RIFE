@@ -67,8 +67,19 @@ def pil_to_tensor(img: Image.Image, device) -> torch.Tensor:
     img_tensor_chw = torch.from_numpy(img_rgb_array.transpose(2, 0, 1)).float().to(device) / 255.
     return img_tensor_chw.unsqueeze(0)
 
-def pad_tensor_for_rife(tensor: torch.Tensor, multiple: int = 32, min_size: int = 512) -> Tuple[torch.Tensor, Tuple[int, int]]:
-    """Pads a tensor to dimensions that are a multiple of a given number, with a minimum size."""
+def pad_tensor_for_rife(tensor: torch.Tensor, multiple: int = 32, min_size: int = 512, center_padding: bool = True) -> Tuple[torch.Tensor, Tuple[int, int, int, int]]:
+    """
+    Pads a tensor to dimensions that are a multiple of a given number, with a minimum size.
+    
+    Args:
+        tensor: Input tensor to pad
+        multiple: Padding multiple (default 32 for RIFE)
+        min_size: Minimum tensor size (default 512)
+        center_padding: If True, use centered padding; if False, use asymmetric (right/bottom) padding
+        
+    Returns:
+        Tuple of (padded_tensor, (original_h, original_w, pad_top, pad_left))
+    """
     _n, _c, h, w = tensor.shape
     
     # Calculate the target padded height and width
@@ -79,18 +90,49 @@ def pad_tensor_for_rife(tensor: torch.Tensor, multiple: int = 32, min_size: int 
     ph = max(min_size, ph)
     pw = max(min_size, pw)
 
-    padding = (0, pw - w, 0, ph - h)
-    return F.pad(tensor, padding), (h, w)
+    if center_padding:
+        # SYSTEMATIC FIX: Use centered padding to match FFmpeg's coordinate system
+        # This eliminates the 16-pixel shift by ensuring spatial alignment
+        pad_left = (pw - w) // 2
+        pad_right = pw - w - pad_left  
+        pad_top = (ph - h) // 2
+        pad_bottom = ph - h - pad_top
+        padding = (pad_left, pad_right, pad_top, pad_bottom)
+        
+        # Return padding coordinates for precise cropping
+        return F.pad(tensor, padding), (h, w, pad_top, pad_left)
+    else:
+        # Legacy asymmetric padding (right/bottom only) - causes alignment issues
+        padding = (0, pw - w, 0, ph - h)
+        return F.pad(tensor, padding), (h, w, 0, 0)
 
-def save_tensor_as_image(tensor: torch.Tensor, path: Path, original_size: Tuple[int, int]):
-    """Crops a tensor to original size and saves it as an image file.
-    
-    NOTE: This function now properly handles RGB tensors and converts to BGR only for cv2.imwrite.
+def save_tensor_as_image(tensor: torch.Tensor, path: Path, original_size: Tuple[int, int, int, int]):
     """
-    h_orig, w_orig = original_size
+    Crops a tensor to original size and saves it as an image file.
+    
+    SYSTEMATIC FIX: Now handles centered padding coordinates for precise cropping.
+    This ensures exact spatial alignment with FFmpeg-processed videos.
+    
+    Args:
+        tensor: Padded tensor to crop and save
+        path: Output file path
+        original_size: Tuple of (original_h, original_w, pad_top, pad_left)
+    """
+    if len(original_size) == 2:
+        # Legacy format compatibility: (h_orig, w_orig)
+        h_orig, w_orig = original_size
+        pad_top, pad_left = 0, 0
+    else:
+        # New centered padding format: (h_orig, w_orig, pad_top, pad_left)
+        h_orig, w_orig, pad_top, pad_left = original_size
+    
     # Select the image from the batch, then detach, move to CPU, convert to numpy, and transpose axes
     img_to_save_permuted = tensor[0].detach().cpu().numpy().transpose(1, 2, 0)
-    img_to_save_cropped = img_to_save_permuted[:h_orig, :w_orig, :] 
+    
+    # SYSTEMATIC FIX: Use precise padding coordinates for cropping
+    # This eliminates spatial misalignment by cropping from exact original position
+    img_to_save_cropped = img_to_save_permuted[pad_top:pad_top+h_orig, pad_left:pad_left+w_orig, :] 
+    
     img_to_save_uint8 = (img_to_save_cropped * 255).clip(0, 255).astype(np.uint8)
     # Convert RGB to BGR for cv2.imwrite
     img_to_save_bgr = cv2.cvtColor(img_to_save_uint8, cv2.COLOR_RGB2BGR)
