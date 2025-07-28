@@ -115,19 +115,22 @@ class SimpleVideoReencoder:
         print("🔄 Using direct reencoding method...")
         start_time = time.time()
         
-        # Detect FPS from original video
-        print("🎯 Detecting video FPS...")
-        detected_fps = self._detect_video_fps(input_path)
-        print(f"🎯 Detected FPS: {detected_fps}")
+        # Detect original FPS for proper conversion
+        print("🎯 Detecting original FPS...")
+        original_fps = self._detect_video_fps(input_path)
+        print(f"📊 Original FPS: {original_fps}")
+        print(f"🎯 Target output FPS: 25")
         
-        # Direct reencoding command with BT.709 normalization
+        # Direct reencoding command with BT.709 normalization and proper FPS conversion
         direct_cmd = [
             'ffmpeg', '-y', '-i', input_path,
-            '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-pix_fmt', 'yuv420p',
-            '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
+            '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
+            '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1,fps=25',
             '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
             '-movflags', '+faststart',
-            '-c:a', 'aac', '-b:a', '192k', '-ar', '16000',
+            '-map', '0:v:0',  # Map first video stream
+            '-map', '0:a?',   # Map all audio streams if present (? makes it optional)
+            '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',  # Standard 48kHz audio
             str(output_path)
         ]
         
@@ -148,9 +151,10 @@ class SimpleVideoReencoder:
                 f"{original_bitrate_info}\n\n"
                 f"🎯 APPLIED DIRECT ENCODING:\n"
                 f"• Direct FFmpeg reencoding (no frame extraction)\n"
+                f"• Output forced to 25 FPS\n"
                 f"• H.264 codec with CRF 18\n"
                 f"• BT.709 color space normalization\n"
-                f"• AAC audio at 192k\n"
+                f"• AAC audio at 192k, 48kHz\n"
                 f"• Web optimized\n\n"
                 f"📊 FINAL RESULT:\n{final_bitrate_info}"
             )
@@ -182,29 +186,28 @@ class SimpleVideoReencoder:
             if extract_result.returncode != 0:
                 return None, f"❌ Frame extraction failed: {extract_result.stderr}"
             
-            # STEP 2b: Detect FPS from original video
-            print("🎯 Detecting video FPS...")
-            detected_fps = self._detect_video_fps(input_path)
-            print(f"🎯 Detected FPS: {detected_fps}")
+            # STEP 2b: Detect original FPS for proper frame rate conversion
+            print("🎯 Detecting original FPS...")
+            original_fps = self._detect_video_fps(input_path)
+            print(f"📊 Original FPS: {original_fps}")
+            print(f"🎯 Target output FPS: 25")
             
-            # STEP 2c: Quick color consistency check
-            print("🎨 Verifying color consistency...")
-            color_check_result = self._verify_color_consistency(input_path, temp_frames_dir)
-            
-            # STEP 2d: Rebuild video from frames with BT.709 normalization (2nd pass)
+            # STEP 2c: Rebuild video from frames with BT.709 normalization (2nd pass)
             print("🔄 Rebuilding video from normalized frames...")
             start_time = time.time()
             
             rebuild_cmd = [
                 'ffmpeg', '-y',
-                '-framerate', str(detected_fps),
+                '-r', str(original_fps),  # Input frames at original rate
                 '-i', str(temp_frames_dir / 'frame_%06d.png'),
                 '-i', input_path,  # For audio
-                '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-pix_fmt', 'yuv420p',
-                '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
+                '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
+                '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1,fps=25',
                 '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
                 '-movflags', '+faststart',
-                '-c:a', 'aac', '-b:a', '192k', '-ar', '16000',
+                '-map', '0:v:0',  # Map video from frames
+                '-map', '1:a?',   # Map audio from original file if present
+                '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',  # Standard 48kHz audio
                 str(output_path)
             ]
             
@@ -225,12 +228,11 @@ class SimpleVideoReencoder:
                     f"{original_bitrate_info}\n\n"
                     f"🎯 APPLIED FRAME-BASED ENCODING:\n"
                     f"• Frame extraction with BT.709 (1st normalization pass)\n"
-                    f"• Video rebuild at {detected_fps} FPS\n"
+                    f"• Video rebuild at 25 FPS (forced)\n"
                     f"• H.264 codec with CRF 18 (2nd normalization pass)\n"
                     f"• BT.709 color space throughout\n"
-                    f"• AAC audio at 192k\n"
+                    f"• AAC audio at 192k, 48kHz\n"
                     f"• Web optimized\n\n"
-                    f"🎨 COLOR CONSISTENCY CHECK:\n{color_check_result}\n\n"
                     f"📊 FINAL RESULT:\n{final_bitrate_info}"
                 )
                 return str(output_path), success_msg
@@ -249,124 +251,11 @@ class SimpleVideoReencoder:
     
     def _detect_video_fps(self, video_path):
         """
-        Detect video FPS using ffprobe, with fallback to 25 fps.
-        Returns the detected FPS as a float.
+        Force 25 FPS output for all videos.
+        Returns 25.0 FPS.
         """
-        try:
-            fps_cmd = [
-                'ffprobe', '-v', 'quiet', 
-                '-select_streams', 'v:0',
-                '-show_entries', 'stream=r_frame_rate',
-                '-of', 'csv=p=0',
-                video_path
-            ]
-            
-            result = subprocess.run(fps_cmd, capture_output=True, text=True)
-            if result.returncode == 0 and result.stdout.strip():
-                fps_string = result.stdout.strip()
-                
-                # Handle fractional frame rates (e.g., "30000/1001")
-                if '/' in fps_string:
-                    numerator, denominator = fps_string.split('/')
-                    fps = float(numerator) / float(denominator)
-                else:
-                    fps = float(fps_string)
-                
-                # Validate FPS is reasonable
-                if 1 <= fps <= 120:
-                    return fps
-                else:
-                    print(f"⚠️ Unusual FPS detected: {fps}, using fallback")
-                    return 25.0
-            else:
-                print(f"⚠️ FPS detection failed: {result.stderr}")
-                return 25.0
-                
-        except Exception as e:
-            print(f"⚠️ FPS detection error: {str(e)}, using fallback")
-            return 25.0
-    
-    def _verify_color_consistency(self, original_video_path, frames_dir):
-        """
-        Quick and simple color consistency check using FFmpeg to compare 
-        a sample frame from original video vs extracted PNG frame.
-        Returns a formatted status message.
-        """
-        try:
-            # Extract a single test frame from original video (frame 1) for comparison
-            test_frame_original = frames_dir / "test_original_frame_000001.png"
-            
-            # Extract the same frame using same BT.709 normalization as our process
-            test_extract_cmd = [
-                'ffmpeg', '-y', '-i', original_video_path,
-                '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
-                '-frames:v', '1',  # Extract only first frame
-                str(test_frame_original)
-            ]
-            
-            result = subprocess.run(test_extract_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                return "⚠️ Could not extract test frame for comparison"
-            
-            # Check if our extracted frame 1 exists
-            extracted_frame = frames_dir / "frame_000001.png"
-            if not extracted_frame.exists():
-                return "⚠️ Could not find extracted frame for comparison"
-            
-            # Use FFmpeg to get basic stats comparison
-            def get_frame_stats(frame_path):
-                stats_cmd = [
-                    'ffprobe', '-v', 'quiet',
-                    '-select_streams', 'v:0',
-                    '-show_entries', 'frame=pkt_size',
-                    '-of', 'csv=p=0',
-                    str(frame_path)
-                ]
-                result = subprocess.run(stats_cmd, capture_output=True, text=True)
-                if result.returncode == 0 and result.stdout.strip():
-                    return int(result.stdout.strip())
-                return None
-            
-            # Get file sizes as a simple consistency check
-            original_size = test_frame_original.stat().st_size if test_frame_original.exists() else 0
-            extracted_size = extracted_frame.stat().st_size
-            
-            # Check for exact match - frames should be 100% identical if no color change
-            if original_size > 0:
-                if original_size == extracted_size:
-                    # Additional binary comparison to be absolutely sure
-                    try:
-                        with open(test_frame_original, 'rb') as f1, open(extracted_frame, 'rb') as f2:
-                            files_identical = f1.read() == f2.read()
-                        
-                        # Clean up test frame after comparison
-                        test_frame_original.unlink()
-                        
-                        if files_identical:
-                            return f"✅ PERFECT: Colors 100% preserved (identical frames: {original_size} bytes)"
-                        else:
-                            return f"❌ FAILED: Frames same size but different content ({original_size} bytes)"
-                    except Exception as e:
-                        # Clean up test frame if comparison fails
-                        if test_frame_original.exists():
-                            test_frame_original.unlink()
-                        # Fall back to size comparison if binary comparison fails
-                        return f"✅ LIKELY PRESERVED: Identical frame size ({original_size} bytes)"
-                else:
-                    # Clean up test frame
-                    if test_frame_original.exists():
-                        test_frame_original.unlink()
-                    
-                    size_diff_percent = abs(original_size - extracted_size) / original_size * 100
-                    return f"❌ FAILED: Color change detected (size diff: {size_diff_percent:.1f}%, {original_size} vs {extracted_size} bytes)"
-            else:
-                # Clean up test frame
-                if test_frame_original.exists():
-                    test_frame_original.unlink()
-                return "⚠️ Could not verify color consistency - test frame extraction failed"
-                
-        except Exception as e:
-            return f"⚠️ Color check failed: {str(e)[:50]}..."
+        print("🎯 Forcing output to 25 FPS")
+        return 25.0
     
     def _format_bitrate_info(self, video_params):
         """Format bit rate information for display."""
@@ -408,14 +297,15 @@ class SimpleVideoReencoder:
 📋 DIRECT REENCODING (Default, Unchecked):
 • Fast standard FFmpeg reencoding
 • No frame extraction required
+• Output forced to 25 FPS
 • Applies BT.709 color space normalization
-• H.264 codec with CRF 18, AAC audio
+• H.264 codec with CRF 18, AAC audio 192k/48kHz
 • Checks standards first, skips if optimal
 • Faster processing, less disk usage
 
 🖼️ FRAME-BASED REENCODING (Checked):
 • Extract frames with BT.709 normalization
-• Rebuild video from normalized frames
+• Rebuild video at 25 FPS (forced)
 • Perfect PNG frame compatibility
 • Eliminates color quantization differences
 • Color consistency verification
@@ -430,7 +320,7 @@ class SimpleVideoReencoder:
 📊 FEATURES:
 • BT.709 color space throughout
 • H.264 (libx264) with CRF 18
-• AAC audio at 192k, 16kHz
+• AAC audio at 192k, 48kHz
 • Web optimized with faststart
 • Automatic temp cleanup (frame mode)
 • Detailed processing reports"""

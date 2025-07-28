@@ -308,7 +308,7 @@ def create_rife_ui():
                     video_input_reencoding = gr.Video(label="Upload Video to Re-encode")
                     force_reencoding_checkbox = gr.Checkbox(
                         label="Use frame-based reencoding (extract frames)", 
-                        value=True,
+                        value=False,
                         info="Check this to use frame extraction method for perfect color consistency. Unchecked = faster direct reencoding. Checked = slower frame-based reencoding with color analysis."
                     )
                     reencode_button = gr.Button("🔄 Re-encode Video", variant="primary", size="lg")
