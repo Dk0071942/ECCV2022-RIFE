@@ -149,16 +149,35 @@ cv2.imwrite(str(path), img_to_save_uint16, [cv2.IMWRITE_PNG_COMPRESSION, 0])
 
 ### Issue 5: Spatial Alignment Issues in Chained Videos
 
-**Root Cause**: Padding strategy mismatch between RIFE interpolation and FFmpeg video scaling:
-- **RIFE padding**: Added padding only to right/bottom edges  
-- **FFmpeg scaling**: Used centered padding `x=(ow-iw)/2:y=(oh-ih)/2`
-- **Result**: Spatial misalignment when concatenating transition segments with main videos
+**Root Cause**: Video metadata inconsistencies during FFmpeg concatenation caused "quick zoom" visual artifacts in media players, while professional editing software (Adobe Premiere Pro) normalized the metadata and displayed correctly.
 
-**Solutions Implemented**:
-1. **Centered Padding for RIFE**: Updated `pad_tensor_for_rife()` to support centered padding mode
-2. **Precise Cropping**: Enhanced cropping to use exact padding coordinates `(pad_top, pad_left)`
-3. **Consistent Dimensions**: All interpolation services now use centered padding by default
-4. **Spatial Information Tracking**: Padding coordinates preserved throughout pipeline
+**Technical Analysis**:
+- **Stream Copy Issue**: FFmpeg `-c copy` preserved conflicting display matrices and transform metadata from individual segments
+- **Player Behavior**: Media players interpret metadata literally → visual shift visible
+- **Professional Software**: Adobe PR normalizes metadata during import → appears consistent
+- **Result**: Player-dependent visual artifacts in chained interpolation output
+
+**Solution Applied**: Metadata normalization during concatenation:
+- **File Updated**: `rife_app/services/chained.py:340-348`
+- **Change**: Replaced stream copy with re-encoding during concatenation
+- **Added**: Explicit aspect ratio, color space, and format standardization
+- **Result**: Consistent video metadata eliminates player-dependent visual artifacts
+
+**Technical Implementation**:
+```bash
+# Before (stream copy - preserves inconsistent metadata)
+ffmpeg -f concat -i list.txt -c copy output.mp4
+
+# After (re-encode with normalized metadata)  
+ffmpeg -f concat -i list.txt -c:v libx264 -preset veryfast -crf 18 \
+  -pix_fmt yuv420p -aspect W:H -color_primaries bt709 \
+  -color_trc bt709 -colorspace bt709 -movflags +faststart output.mp4
+```
+
+**Additional Enhancements**:
+- **Spatial Validation**: Added dimension consistency checks across all video segments
+- **Enhanced Debugging**: Improved logging with width×height information for troubleshooting
+- **Quality Preservation**: Maintains high video quality while normalizing metadata
 
 **Files Updated for Spatial Fix**:
 - `rife_app/utils/framing.py` - Enhanced padding function with center_padding option and precise cropping

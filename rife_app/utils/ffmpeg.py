@@ -115,7 +115,8 @@ def transfer_audio(source_video_path: Path, target_video_path: Path, operation_d
 
 def scale_and_pad_image(input_img_path: Path, target_w: int, target_h: int, output_img_path: Path) -> tuple[bool, str]:
     """Scales and pads an image to a target resolution using FFmpeg."""
-    vf_filter = f"scale=w={target_w}:h={target_h}:force_original_aspect_ratio=1,pad=w={target_w}:h={target_h}:x=(ow-iw)/2:y=(oh-ih)/2:color=black"
+    # SPATIAL ALIGNMENT FIX: Remove centered padding to match RIFE coordinate system
+    vf_filter = f"scale=w={target_w}:h={target_h}:force_original_aspect_ratio=decrease,pad=w={target_w}:h={target_h}:color=black"
     command = [
         'ffmpeg', '-y', '-i', input_img_path,
         '-vf', vf_filter,
