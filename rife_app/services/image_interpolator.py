@@ -29,7 +29,8 @@ class ImageInterpolator:
             # Prepare tensors
             img0_tensor = pil_to_tensor(img0_pil, DEVICE)
             
-            # SYSTEMATIC FIX: Use centered padding to eliminate 16-pixel shift
+            # Use centered padding to ensure RIFE compatibility (multiples of 32)
+            # This padding will be removed after interpolation to maintain original dimensions
             img0_padded, (h, w, pad_top, pad_left) = pad_tensor_for_rife(img0_tensor, center_padding=True)
             
             # Pad the second image using the same centered padding approach
@@ -45,13 +46,16 @@ class ImageInterpolator:
                 target_frames = (2 ** num_passes)  # Convert passes to frame count
                 from rife_app.utils.disk_based_interpolation import disk_based_interpolate
                 video_path, status_msg = disk_based_interpolate(
-                    img0_padded, img1_padded, self.model, target_frames=target_frames, device=DEVICE
+                    img0_padded, img1_padded, self.model, target_frames=target_frames, 
+                    device=DEVICE, original_size=original_size
                 )
                 
                 if video_path:
-                    duration_seconds = target_frames / 25.0
-                    # Ensure video_path is a string for Gradio
-                    return str(video_path), f"Disk-based interpolation: {num_passes} passes → {target_frames} frames → {duration_seconds:.2f}s at 25 FPS. {status_msg}"
+                    # Extract resolution from original size
+                    output_resolution = f"{w}×{h}"
+                    # The status_msg from disk_based_interpolate already contains the full message
+                    # Just add resolution info to it
+                    return str(video_path), f"{status_msg} | Output: {output_resolution}"
                 else:
                     return None, f"Disk-based interpolation failed: {status_msg}"
                     
@@ -114,7 +118,9 @@ class ImageInterpolator:
             if unique_op_dir.exists():
                 shutil.rmtree(unique_op_dir)
 
-            return str(output_video_path), f"Interpolation successful using {interpolation_method}. Generated {len(frame_tensors)} frames with optimal quality."
+            # Add resolution info to the output message
+            output_resolution = f"{w}×{h}"
+            return str(output_video_path), f"Interpolation successful using {interpolation_method}. Generated {len(frame_tensors)} frames with optimal quality. | Output: {output_resolution}"
         except Exception as e:
             # Cleanup on error
             if unique_op_dir.exists():

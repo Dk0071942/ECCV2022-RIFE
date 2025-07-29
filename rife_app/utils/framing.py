@@ -394,8 +394,9 @@ def save_tensor_as_image(tensor: torch.Tensor, path: Path, original_size: Tuple[
     """
     Crops a tensor to original size and saves it as an image file.
     
-    SYSTEMATIC FIX: Now handles centered padding coordinates for precise cropping.
-    This ensures exact spatial alignment with FFmpeg-processed videos.
+    This function handles centered padding coordinates for precise cropping,
+    ensuring the output maintains the original image dimensions by removing
+    the padding that was added for RIFE processing.
     
     NOTE: Saves as PNG in full range (0-255) which is the standard for PNG files.
     The color range conversion is handled by FFmpeg when creating the video.
@@ -410,14 +411,14 @@ def save_tensor_as_image(tensor: torch.Tensor, path: Path, original_size: Tuple[
         h_orig, w_orig = original_size
         pad_top, pad_left = 0, 0
     else:
-        # New centered padding format: (h_orig, w_orig, pad_top, pad_left)
+        # Centered padding format: (h_orig, w_orig, pad_top, pad_left)
         h_orig, w_orig, pad_top, pad_left = original_size
     
     # Select the image from the batch, then detach, move to CPU, convert to numpy, and transpose axes
     img_to_save_permuted = tensor[0].detach().cpu().numpy().transpose(1, 2, 0)
     
-    # SYSTEMATIC FIX: Use precise padding coordinates for cropping
-    # This eliminates spatial misalignment by cropping from exact original position
+    # Use precise padding coordinates for cropping
+    # This removes the padding and restores original dimensions
     img_to_save_cropped = img_to_save_permuted[pad_top:pad_top+h_orig, pad_left:pad_left+w_orig, :] 
     
     # Save in full range (0-255) as is standard for PNG

@@ -30,6 +30,7 @@ import math
 from dataclasses import dataclass
 
 from .memory_monitor import GPUMemoryMonitor, monitor_memory_usage
+from .framing import pad_tensor_for_rife
 from ..config import DEVICE, VIDEO_TMP_DIR
 
 
@@ -66,7 +67,7 @@ class DiskBasedInterpolator:
         self.memory_monitor = GPUMemoryMonitor(enable_logging=True)
         
     def _save_frame_to_disk(self, tensor: torch.Tensor, path: Path) -> bool:
-        """Save frame tensor to disk as PNG in full range."""
+        """Save frame tensor to disk as PNG in full range, preserving padding."""
         try:
             # Convert tensor to numpy array
             if tensor.dim() == 4:  # Remove batch dimension if present
@@ -74,6 +75,10 @@ class DiskBasedInterpolator:
             
             # Convert from CHW to HWC and scale to 0-255
             frame_np = tensor.detach().cpu().numpy().transpose(1, 2, 0)
+            
+            # NOTE: We preserve padding here to maintain consistent tensor dimensions
+            # Cropping will be done only at the final video creation stage
+            
             frame_np = (frame_np * 255).astype(np.uint8)
             
             # Save as PNG using PIL to ensure consistent encoding
@@ -298,7 +303,8 @@ class DiskBasedInterpolator:
         frame_infos: List[FrameInfo],
         output_video_path: Path,
         fps: int = 30,
-        cleanup_temp: bool = True
+        cleanup_temp: bool = True,
+        original_size: Optional[Tuple[int, int, int, int]] = None
     ) -> bool:
         """
         Convert frame sequence to video file.
@@ -329,11 +335,22 @@ class DiskBasedInterpolator:
             with tempfile.TemporaryDirectory(prefix="rife_video_") as video_temp_dir:
                 video_temp_path = Path(video_temp_dir)
                 
-                # Copy frames with sequential names
+                # Copy frames with sequential names, applying cropping if needed
                 for i, frame_info in enumerate(frame_infos):
                     src_path = frame_info.path
                     dst_path = video_temp_path / f"frame_{i:06d}.png"
-                    shutil.copy2(src_path, dst_path)
+                    
+                    if original_size is not None and len(original_size) == 4:
+                        # Load, crop, and save
+                        from PIL import Image
+                        img = Image.open(src_path)
+                        h_orig, w_orig, pad_top, pad_left = original_size
+                        # Crop to original dimensions
+                        img_cropped = img.crop((pad_left, pad_top, pad_left + w_orig, pad_top + h_orig))
+                        img_cropped.save(dst_path, 'PNG', compress_level=0)
+                    else:
+                        # Just copy the file
+                        shutil.copy2(src_path, dst_path)
                 
                 # Create video with FFmpeg using color-safe conversion
                 ffmpeg_cmd = [
@@ -382,7 +399,8 @@ def disk_based_interpolate(
     end_frame: torch.Tensor,
     model,
     target_frames: int = 5,
-    device: str = "cuda"
+    device: str = "cuda",
+    original_size: Optional[Tuple[int, int, int, int]] = None
 ) -> Tuple[Optional[Path], str]:
     """
     Convenience function for disk-based interpolation.
@@ -393,12 +411,14 @@ def disk_based_interpolate(
         model: RIFE model instance
         target_frames: Target number of total frames
         device: PyTorch device
+        original_size: Optional tuple of (h, w, pad_top, pad_left) for cropping
         
     Returns:
         Tuple of (video_path, status_message)
     """
     try:
         interpolator = DiskBasedInterpolator(model, device)
+        # NOTE: We no longer store original_size here since we preserve padding
         
         # Generate frames
         frame_infos, temp_dir = interpolator.interpolate_with_disk_storage(
@@ -412,7 +432,7 @@ def disk_based_interpolate(
         # Ensure VIDEO_TMP_DIR exists
         VIDEO_TMP_DIR.mkdir(parents=True, exist_ok=True)
         
-        success = interpolator.frames_to_video(frame_infos, output_path, fps=25, cleanup_temp=True)  # Fixed 25 FPS for image interpolation
+        success = interpolator.frames_to_video(frame_infos, output_path, fps=25, cleanup_temp=True, original_size=original_size)  # Fixed 25 FPS for image interpolation
         
         if success:
             passes = int(math.log2(len(frame_infos))) if len(frame_infos) > 1 else 1
