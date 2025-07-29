@@ -40,14 +40,19 @@ class Model:
 
     def load_model(self, path, rank=0):
         def convert(param):
-            return {
-            k.replace("module.", ""): v
-                for k, v in param.items()
-                if "module." in k
-            }
-            
+            if rank == -1:
+                return {
+                    k.replace("module.", ""): v
+                    for k, v in param.items()
+                    if "module." in k
+                }
+            else:
+                return param
         if rank <= 0:
-            self.flownet.load_state_dict(convert(torch.load('{}/flownet.pkl'.format(path))))
+            if torch.cuda.is_available():
+                self.flownet.load_state_dict(convert(torch.load('{}/flownet.pkl'.format(path))), False)
+            else:
+                self.flownet.load_state_dict(convert(torch.load('{}/flownet.pkl'.format(path), map_location ='cpu')), False)
         
     def save_model(self, path, rank=0):
         if rank == 0:

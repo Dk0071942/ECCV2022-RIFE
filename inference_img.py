@@ -6,6 +6,8 @@ from torch.nn import functional as F
 import warnings
 warnings.filterwarnings("ignore")
 
+print("Beginning RIFE an image interpolator")
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_grad_enabled(False)
 if torch.cuda.is_available():
@@ -28,22 +30,22 @@ try:
             from model.RIFE_HDv2 import Model
             model = Model()
             model.load_model(args.modelDir, -1)
-            print("Loaded v2.x HD model.")
+            print("Loaded v2.x HD model.", flush=True)
         except:
             from train_log.RIFE_HDv3 import Model
             model = Model()
             model.load_model(args.modelDir, -1)
-            print("Loaded v3.x HD model.")
+            print("Loaded v3.x HD model.", flush=True)
     except:
         from model.RIFE_HD import Model
         model = Model()
         model.load_model(args.modelDir, -1)
-        print("Loaded v1.x HD model")
+        print("Loaded v1.x HD model", flush=True)
 except:
     from model.RIFE import Model
     model = Model()
     model.load_model(args.modelDir, -1)
-    print("Loaded ArXiv-RIFE model")
+    print("Loaded ArXiv-RIFE model", flush=True)
 model.eval()
 model.device()
 
