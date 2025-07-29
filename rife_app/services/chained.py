@@ -7,8 +7,8 @@ from enum import Enum
 from typing import Union
 
 from rife_app.config import DEVICE, CHAINED_TMP_DIR, VIDEO_TMP_DIR
-from rife_app.utils.framing import get_video_info, extract_frames, extract_precise_boundary_frame, validate_temporal_alignment
-from rife_app.utils.ffmpeg import run_ffmpeg_command, scale_and_pad_image
+from rife_app.utils.framing import get_video_info, extract_precise_boundary_frame
+from rife_app.utils.ffmpeg import run_ffmpeg_command
 from rife_app.services.image_interpolator import ImageInterpolator
 
 class InterpolationMethod(Enum):
@@ -58,7 +58,7 @@ class ChainedInterpolator:
             print(f"❌ Frame extraction failed: {e}")
             raise
     
-    def _create_transition_segment(self, start_frame_pil, end_frame_pil, num_passes, segment_path, method=InterpolationMethod.IMAGE_INTERPOLATION):
+    def _create_transition_segment(self, start_frame_pil, end_frame_pil, num_passes, segment_path, target_fps, method=InterpolationMethod.IMAGE_INTERPOLATION):
         """
         Create transition video using specified interpolation method.
         
@@ -67,6 +67,7 @@ class ChainedInterpolator:
             end_frame_pil: Ending frame (PIL Image) 
             num_passes: Number of interpolation passes
             segment_path: Output path for transition video
+            target_fps: Target frame rate for video
             method: InterpolationMethod to use for transition creation
         
         Returns:
@@ -75,6 +76,7 @@ class ChainedInterpolator:
         print(f"🎬 Creating transition segment: {segment_path.name}")
         print(f"  - From frame: {start_frame_pil.size}")
         print(f"  - To frame: {end_frame_pil.size}")
+        print(f"  - Target FPS: {target_fps}")
         print(f"  - Passes: {num_passes}")
         print(f"  - Method: {method.value}")
         
@@ -85,7 +87,7 @@ class ChainedInterpolator:
                     img0_pil=start_frame_pil,
                     img1_pil=end_frame_pil,
                     num_passes=num_passes,
-                    fps=25,  # Fixed FPS for consistency
+                    fps=target_fps,  # Use target FPS for consistency
                     use_disk_based=False  # Use memory-based for better quality
                 )
                 
@@ -95,7 +97,7 @@ class ChainedInterpolator:
                     img0_pil=start_frame_pil,
                     img1_pil=end_frame_pil,
                     num_passes=num_passes,
-                    fps=25,
+                    fps=target_fps,  # Use target FPS for consistency
                     use_disk_based=True  # Use disk-based for memory efficiency
                 )
                 
@@ -167,11 +169,8 @@ class ChainedInterpolator:
         print(f"🔢 Passes: {num_passes} (duration controlled by passes, not fixed duration)")
         
         try:
-            # Enhanced validation with temporal alignment analysis
-            print("📊 Validating input videos and temporal alignment...")
-            
-            video_paths = [anchor_video_path, middle_video_path, end_video_path]
-            alignment_analysis = validate_temporal_alignment(video_paths, final_fps)
+            # Simple validation
+            print("📊 Validating input videos...")
             
             # Get individual video info
             anchor_info = get_video_info(Path(anchor_video_path))
@@ -180,24 +179,6 @@ class ChainedInterpolator:
             
             if not all([anchor_info, middle_info, end_info]):
                 raise Exception("Could not read properties from one or more videos.")
-            
-            # Display alignment analysis
-            print(f"🔍 Temporal Alignment Analysis:")
-            print(f"   FPS Consistent: {alignment_analysis['fps_consistent']}")
-            print(f"   Resolution Consistent: {alignment_analysis['resolution_consistent']}")
-            
-            if alignment_analysis['recommendations']:
-                print(f"📋 Recommendations:")
-                for rec in alignment_analysis['recommendations']:
-                    print(f"   - {rec}")
-            
-            # Use middle video resolution as target
-            target_w, target_h = middle_info['width'], middle_info['height']
-            print(f"🎯 Target resolution: {target_w}x{target_h}")
-            
-            # Determine if smart re-encoding optimization can be applied
-            needs_reencoding = not (alignment_analysis['fps_consistent'] and alignment_analysis['resolution_consistent'])
-            print(f"🔧 Re-encoding optimization: {'FULL' if needs_reencoding else 'MINIMAL'}")
 
             # Setup working directories
             segments_dir = op_dir / "segments"
@@ -224,6 +205,7 @@ class ChainedInterpolator:
                 middle_first_frame, 
                 num_passes, 
                 transition1_path,
+                final_fps,
                 method
             )
             
@@ -235,67 +217,57 @@ class ChainedInterpolator:
                 end_first_frame, 
                 num_passes, 
                 transition2_path,
+                final_fps,
                 method
             )
             
             print("✅ All transition segments created successfully")
 
-            # Phase 3: Smart re-encoding with optimization
-            print(f"\n⚙️ Phase 3: Smart video processing...")
+            # Phase 3: Simple FPS conversion if needed
+            print(f"\n⚙️ Phase 3: Preparing videos for concatenation...")
             
-            anchor_processed_path = segments_dir / "anchor_processed.mp4"
-            middle_processed_path = segments_dir / "middle_processed.mp4"
-            end_processed_path = segments_dir / "end_processed.mp4"
+            # Check if we need to convert FPS for any videos
+            needs_fps_conversion = any([
+                anchor_info['fps'] != final_fps,
+                middle_info['fps'] != final_fps,
+                end_info['fps'] != final_fps
+            ])
             
-            # SPATIAL ALIGNMENT FIX: Use simple scaling without centered padding to match RIFE coordinate system
-            # This eliminates the "quick zoom" visual artifact caused by coordinate system mismatch
-            vf_filter = f"scale=w={target_w}:h={target_h}:force_original_aspect_ratio=decrease,pad=w={target_w}:h={target_h}:color=black"
-            
-            for i, (input_path, output_path, name, video_info) in enumerate([
-                (anchor_video_path, anchor_processed_path, "anchor", anchor_info), 
-                (middle_video_path, middle_processed_path, "middle", middle_info), 
-                (end_video_path, end_processed_path, "end", end_info)
-            ]):
-                video_analysis = alignment_analysis['videos'][i]
+            if needs_fps_conversion:
+                print(f"📊 Converting videos to {final_fps} FPS for consistency")
+                anchor_processed_path = segments_dir / "anchor_fps.mp4"
+                middle_processed_path = segments_dir / "middle_fps.mp4"
+                end_processed_path = segments_dir / "end_fps.mp4"
                 
-                # Smart processing decision
-                needs_fps_conversion = video_analysis['needs_fps_conversion']
-                needs_resolution_conversion = video_analysis['needs_resolution_conversion']
-                
-                if not needs_fps_conversion and not needs_resolution_conversion and video_info['codec'] in ['H264', 'h264']:
-                    # Optimal case: just copy with minimal processing
-                    print(f"🚀 Fast-copying {name} video (already optimal): {Path(input_path).name}")
-                    cmd = [
-                        'ffmpeg', '-y', '-i', input_path,
-                        '-c', 'copy', '-avoid_negative_ts', 'make_zero',
-                        '-movflags', '+faststart', output_path
-                    ]
-                else:
-                    # Re-encode only when necessary
-                    print(f"🔄 Re-encoding {name} video: {Path(input_path).name}")
-                    print(f"   Reasons: FPS={needs_fps_conversion}, Resolution={needs_resolution_conversion}")
-                    cmd = [
-                        'ffmpeg', '-y', '-i', input_path, 
-                        '-vf', vf_filter, 
-                        '-r', str(final_fps), 
-                        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',  # Changed to 'fast' for speed
-                        '-pix_fmt', 'yuv420p',
-                        '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
-                        '-movflags', '+faststart', '-an', output_path
-                    ]
-                
-                success, msg = run_ffmpeg_command(cmd)
-                if not success: 
-                    raise Exception(f"FFmpeg error processing {name}: {msg}")
-                
-                if not output_path.exists() or output_path.stat().st_size == 0:
-                    raise Exception(f"Processed {name} video failed: {output_path}")
-                
-                file_size_mb = output_path.stat().st_size / (1024 * 1024)
-                processing_type = "copied" if not (needs_fps_conversion or needs_resolution_conversion) else "re-encoded"
-                print(f"✅ {name.capitalize()} video {processing_type}: {file_size_mb:.1f} MB")
+                for input_path, output_path, name, video_info in [
+                    (anchor_video_path, anchor_processed_path, "anchor", anchor_info), 
+                    (middle_video_path, middle_processed_path, "middle", middle_info), 
+                    (end_video_path, end_processed_path, "end", end_info)
+                ]:
+                    if video_info['fps'] != final_fps:
+                        print(f"🔄 Converting {name} video from {video_info['fps']} to {final_fps} FPS")
+                        cmd = [
+                            'ffmpeg', '-y', '-i', input_path, 
+                            '-r', str(final_fps),
+                            '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',
+                            '-pix_fmt', 'yuv420p',
+                            '-an', output_path
+                        ]
+                        success, msg = run_ffmpeg_command(cmd)
+                        if not success: 
+                            raise Exception(f"FFmpeg error converting {name}: {msg}")
+                    else:
+                        # Just copy the file if FPS already matches
+                        shutil.copy2(input_path, output_path)
+                        print(f"✅ {name.capitalize()} video already at {final_fps} FPS")
+            else:
+                print("✅ All videos already at target FPS")
+                # Use original paths
+                anchor_processed_path = Path(anchor_video_path)
+                middle_processed_path = Path(middle_video_path)
+                end_processed_path = Path(end_video_path)
 
-            # Phase 4: Validate all segments before concatenation
+            # Phase 4: Simple validation
             print(f"\n🔍 Phase 4: Validating all segments...")
             
             all_segments = [
@@ -306,9 +278,6 @@ class ChainedInterpolator:
                 ("End video", end_processed_path)
             ]
             
-            # SPATIAL VALIDATION: Verify dimension consistency across all segments
-            expected_dimensions = None
-            
             for i, (name, path) in enumerate(all_segments, 1):
                 if not path.exists():
                     raise Exception(f"Missing segment: {path}")
@@ -317,37 +286,10 @@ class ChainedInterpolator:
                 if file_size == 0:
                     raise Exception(f"Empty segment: {path}")
                 
-                # Get video info and validate dimensions
-                try:
-                    video_info = get_video_info(path)
-                    if video_info:
-                        duration = video_info.get('duration', 0)
-                        frame_count = video_info.get('frame_count', 0)
-                        width = video_info.get('width', 0)
-                        height = video_info.get('height', 0)
-                        duration_str = f"{duration:.2f}s" if duration else "unknown"
-                        
-                        # Validate spatial consistency
-                        current_dimensions = (width, height)
-                        if expected_dimensions is None:
-                            expected_dimensions = current_dimensions
-                            print(f"✅ Reference dimensions set: {width}x{height}")
-                        elif current_dimensions != expected_dimensions:
-                            print(f"⚠️  Dimension mismatch in {name}: expected {expected_dimensions[0]}x{expected_dimensions[1]}, got {width}x{height}")
-                            # Continue with warning but don't fail - FFmpeg concat can handle minor differences
-                    else:
-                        duration_str = "unknown"
-                        frame_count = "unknown"
-                        width, height = "unknown", "unknown"
-                except:
-                    duration_str = "unknown"
-                    frame_count = "unknown"
-                    width, height = "unknown", "unknown"
-                
                 file_size_mb = file_size / (1024 * 1024)
-                print(f"{i}. {name}: {file_size_mb:.1f} MB, {duration_str}, {frame_count} frames, {width}x{height}")
+                print(f"{i}. {name}: {file_size_mb:.1f} MB")
 
-            # Phase 5: Concatenate all segments
+            # Phase 5: Simple concatenation
             print(f"\n🔗 Phase 5: Concatenating final video...")
             
             concat_list_path = op_dir / "concat_list.txt"
@@ -357,30 +299,14 @@ class ChainedInterpolator:
             
             final_video_path = VIDEO_TMP_DIR / f"chained_output_{timestamp}.mp4"
             
-            # Smart concatenation: copy when possible, re-encode only if needed
-            if alignment_analysis['fps_consistent'] and alignment_analysis['resolution_consistent']:
-                print("🚀 Using fast stream copy concatenation (videos already aligned)")
-                cmd_concat = [
-                    'ffmpeg', '-y', '-f', 'concat', '-safe', '0', 
-                    '-i', concat_list_path, 
-                    '-c', 'copy', '-avoid_negative_ts', 'make_zero',
-                    '-movflags', '+faststart',
-                    final_video_path
-                ]
-            else:
-                print("🔄 Using re-encoding concatenation (alignment required)")
-                # METADATA NORMALIZATION FIX: Re-encode during concatenation to eliminate
-                # inconsistent display matrices and transform metadata that cause visual shifts
-                cmd_concat = [
-                    'ffmpeg', '-y', '-f', 'concat', '-safe', '0', 
-                    '-i', concat_list_path, 
-                    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18',  # Changed to 'fast' for speed
-                    '-pix_fmt', 'yuv420p', '-r', str(final_fps),
-                    '-aspect', f'{target_w}:{target_h}',  # Explicit aspect ratio
-                    '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709',
-                    '-movflags', '+faststart',
-                    final_video_path
-                ]
+            # Simple concatenation
+            cmd_concat = [
+                'ffmpeg', '-y', '-f', 'concat', '-safe', '0', 
+                '-i', concat_list_path, 
+                '-c', 'copy',
+                '-an',  # Remove audio
+                final_video_path
+            ]
             
             success, msg = run_ffmpeg_command(cmd_concat)
             if not success: 
@@ -394,34 +320,12 @@ class ChainedInterpolator:
             
             final_size_mb = final_video_path.stat().st_size / (1024 * 1024)
             
-            # Get final video info
-            final_info = get_video_info(final_video_path)
-            if final_info:
-                total_duration = final_info.get('duration', 0)
-                total_frames = final_info.get('frame_count', 0)
-                duration_str = f"{total_duration:.2f}s" if total_duration else "unknown"
-                print(f"📊 Final video stats: {final_size_mb:.1f} MB, {duration_str}, {total_frames} frames")
-            
-            print(f"\n🎉 Enhanced chained interpolation completed successfully!")
+            print(f"\n🎉 Chained interpolation completed successfully!")
             print(f"📁 Output: {final_video_path.name}")
-            print(f"🔗 Structure: [Video1] -> [Smooth Transition] -> [Video2] -> [Smooth Transition] -> [Video3]")
-            print(f"✨ Enhancements: Frame-perfect extraction + Smart re-encoding + Temporal alignment")
+            print(f"📊 Size: {final_size_mb:.1f} MB")
+            print(f"🔗 Structure: [Video1] -> [Transition] -> [Video2] -> [Transition] -> [Video3]")
             
-            # Performance summary
-            optimizations_used = []
-            if alignment_analysis['fps_consistent']:
-                optimizations_used.append("FPS-aligned")
-            if alignment_analysis['resolution_consistent']:
-                optimizations_used.append("Resolution-matched")
-            if not needs_reencoding:
-                optimizations_used.append("Minimal re-encoding")
-            
-            if optimizations_used:
-                print(f"🚀 Optimizations applied: {', '.join(optimizations_used)}")
-            
-            # Enhanced status message with optimization details
-            optimization_summary = ", ".join(optimizations_used) if optimizations_used else "Standard processing"
-            status_message = f"Enhanced chained interpolation successful! Generated {final_size_mb:.1f} MB video with frame-perfect boundaries and smart processing ({optimization_summary})."
+            status_message = f"Chained interpolation successful! Generated {final_size_mb:.1f} MB video."
             
             return str(final_video_path), status_message
         
