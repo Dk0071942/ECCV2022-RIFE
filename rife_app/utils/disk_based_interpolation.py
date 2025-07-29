@@ -64,9 +64,14 @@ class DiskBasedInterpolator:
         self.model = model
         self.device = device
         self.memory_monitor = GPUMemoryMonitor(enable_logging=True)
+        self.original_dims = None  # Store original dimensions before padding
         
     def _save_frame_to_disk(self, tensor: torch.Tensor, path: Path) -> bool:
-        """Save frame tensor to disk as PNG."""
+        """Save frame tensor to disk as PNG.
+        
+        Note: We keep the padded dimensions during processing as RIFE requires 
+        dimensions divisible by 16. Cropping happens only during final video creation.
+        """
         try:
             # Convert tensor to numpy array
             if tensor.dim() == 4:  # Remove batch dimension if present
@@ -194,6 +199,11 @@ class DiskBasedInterpolator:
         else:
             temp_dir.mkdir(parents=True, exist_ok=True)
         
+        # Store original dimensions before any padding (only if not already set)
+        if self.original_dims is None:
+            _, _, h_orig, w_orig = start_frame.shape
+            self.original_dims = (h_orig, w_orig)
+        
         # Calculate passes and duration info for better logging
         import math
         passes = int(math.log2(target_frame_count)) if target_frame_count > 1 else 1
@@ -201,7 +211,7 @@ class DiskBasedInterpolator:
         print(f"💾 Disk-based interpolation: {passes} passes → {target_frame_count} frames → {duration_25fps:.2f}s at 25 FPS")
         print(f"   Temp directory: {temp_dir}")
         
-        # Save initial frames to disk
+        # Save initial frames to disk (keeping padded dimensions for RIFE)
         start_path = temp_dir / "frame_0.000000.png"
         end_path = temp_dir / "frame_1.000000.png"
         
@@ -227,9 +237,6 @@ class DiskBasedInterpolator:
             current_count = len(all_frames)
             remaining_needed = target_frame_count - current_count
             pairs_count = current_count - 1
-            
-            # Determine how many intermediate frames per pair
-            frames_per_pair = max(1, remaining_needed // pairs_count)
             
             new_frames = []
             
@@ -313,12 +320,15 @@ class DiskBasedInterpolator:
             # Sort frames by temporal order
             frame_infos.sort(key=lambda f: f.index)
             
-            # Get dimensions from first frame
-            first_frame = self._load_frame_from_disk(frame_infos[0].path)
-            if first_frame is None:
-                return False
-            
-            _, _, h, w = first_frame.shape
+            # Get dimensions from stored original dimensions (without padding)
+            if self.original_dims:
+                h, w = self.original_dims
+            else:
+                # Fallback to loading first frame if original dims not set
+                first_frame = self._load_frame_from_disk(frame_infos[0].path)
+                if first_frame is None:
+                    return False
+                _, _, h, w = first_frame.shape
             
             # Create temporary directory with sequential frame names
             with tempfile.TemporaryDirectory(prefix="rife_video_") as video_temp_dir:
@@ -330,29 +340,41 @@ class DiskBasedInterpolator:
                     dst_path = video_temp_path / f"frame_{i:06d}.png"
                     shutil.copy2(src_path, dst_path)
                 
-                # Create video with FFmpeg
+                # Create video with FFmpeg, applying crop if needed
+                if self.original_dims and self.original_dims != (h, w):
+                    # Apply crop filter to remove padding
+                    h_orig, w_orig = self.original_dims
+                    crop_filter = f'crop={w_orig}:{h_orig}:0:0'
+                    vf_filter = f'{crop_filter},format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1'
+                else:
+                    vf_filter = 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1'
+                
                 ffmpeg_cmd = [
                     'ffmpeg', '-y',
                     '-r', str(fps),
-                    '-i', video_temp_path / 'frame_%06d.png',
-                    '-s', f'{w}x{h}',
+                    '-i', str(video_temp_path / 'frame_%06d.png'),
                     '-c:v', 'libx264',
                     '-preset', 'medium',
                     '-crf', '18',
                     '-pix_fmt', 'yuv420p',
-                    '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
+                    '-vf', vf_filter,
                     '-color_primaries', 'bt709',
                     '-color_trc', 'bt709',
                     '-colorspace', 'bt709',
                     '-movflags', '+faststart',
-                    output_video_path
+                    str(output_video_path)
                 ]
                 
                 success, msg = run_ffmpeg_command(ffmpeg_cmd, video_temp_path)
                 
                 if success:
                     print(f"🎥 Video created: {output_video_path}")
-                    print(f"   Format: 25 FPS, BT.709 color space, H.264 encoding")
+                    # Report the actual output dimensions (after cropping if applied)
+                    if self.original_dims:
+                        h_out, w_out = self.original_dims
+                    else:
+                        h_out, w_out = h, w
+                    print(f"   Format: {fps} FPS, {w_out}×{h_out}, BT.709 color space, H.264 encoding")
                     
                     # Cleanup temporary frames if requested
                     if cleanup_temp:
@@ -376,17 +398,19 @@ def disk_based_interpolate(
     end_frame: torch.Tensor,
     model,
     target_frames: int = 5,
-    device: str = "cuda"
+    device: str = "cuda",
+    original_dims: Optional[Tuple[int, int]] = None
 ) -> Tuple[Optional[Path], str]:
     """
     Convenience function for disk-based interpolation.
     
     Args:
-        start_frame: Starting frame tensor
-        end_frame: Ending frame tensor
+        start_frame: Starting frame tensor (already padded)
+        end_frame: Ending frame tensor (already padded)
         model: RIFE model instance
         target_frames: Target number of total frames
         device: PyTorch device
+        original_dims: Original dimensions before padding (height, width)
         
     Returns:
         Tuple of (video_path, status_message)
@@ -394,8 +418,12 @@ def disk_based_interpolate(
     try:
         interpolator = DiskBasedInterpolator(model, device)
         
+        # Set original dimensions if provided
+        if original_dims:
+            interpolator.original_dims = original_dims
+        
         # Generate frames
-        frame_infos, temp_dir = interpolator.interpolate_with_disk_storage(
+        frame_infos, _ = interpolator.interpolate_with_disk_storage(
             start_frame, end_frame, target_frames
         )
         
@@ -411,7 +439,25 @@ def disk_based_interpolate(
         if success:
             passes = int(math.log2(len(frame_infos))) if len(frame_infos) > 1 else 1
             duration_25fps = len(frame_infos) / 25.0
-            return str(output_path), f"Disk-based interpolation successful: {passes} passes → {len(frame_infos)} frames → {duration_25fps:.2f}s at 25 FPS"
+            # Get resolution from stored original dimensions (without padding)
+            if interpolator.original_dims:
+                h, w = interpolator.original_dims
+                resolution_info = f" Output resolution: {w}×{h}."
+                print(f"DEBUG: Using original resolution: {w}×{h}")
+            else:
+                # Fallback to loading first frame if original dims not set
+                first_frame = interpolator._load_frame_from_disk(frame_infos[0].path)
+                if first_frame:
+                    _, _, h, w = first_frame.shape
+                    resolution_info = f" Output resolution: {w}×{h}."
+                    print(f"DEBUG: Extracted resolution: {w}×{h}")
+                else:
+                    resolution_info = ""
+                    print("DEBUG: Could not extract resolution from first frame")
+            
+            status_msg = f"Disk-based interpolation successful: {passes} passes → {len(frame_infos)} frames → {duration_25fps:.2f}s at 25 FPS.{resolution_info}"
+            print(f"DEBUG: Final disk-based status: {status_msg}")
+            return str(output_path), status_msg
         else:
             return None, "Failed to create video from frames"
             

@@ -240,7 +240,7 @@ def create_rife_ui():
             # fps_number = gr.Number(value=25, label="Output Video FPS (Fixed)", minimum=25, maximum=25, interactive=False)
             interpolate_button = gr.Button("Generate Interpolated Video", variant="primary")
             video_output_display = gr.Video(label="Output Video")
-            interpolation_status_display = gr.Textbox(label="Status", interactive=False)
+            interpolation_status_display = gr.Textbox(label="Status", interactive=False, lines=3, max_lines=5, show_copy_button=True)
 
         # Tab 3: Chained Interpolation
         with gr.TabItem("3. Chained Video Interpolation"):

@@ -45,13 +45,16 @@ class ImageInterpolator:
                 target_frames = (2 ** num_passes)  # Convert passes to frame count
                 from rife_app.utils.disk_based_interpolation import disk_based_interpolate
                 video_path, status_msg = disk_based_interpolate(
-                    img0_padded, img1_padded, self.model, target_frames=target_frames, device=DEVICE
+                    img0_padded, img1_padded, self.model, target_frames=target_frames, 
+                    device=DEVICE, original_dims=(h, w)
                 )
                 
                 if video_path:
                     duration_seconds = target_frames / 25.0
+                    # The disk_based_interpolate function now includes resolution in status_msg
+                    print(f"DEBUG: Disk-based status message: {status_msg}")
                     # Ensure video_path is a string for Gradio
-                    return str(video_path), f"Disk-based interpolation: {num_passes} passes → {target_frames} frames → {duration_seconds:.2f}s at 25 FPS. {status_msg}"
+                    return str(video_path), status_msg
                 else:
                     return None, f"Disk-based interpolation failed: {status_msg}"
                     
@@ -113,7 +116,9 @@ class ImageInterpolator:
             if unique_op_dir.exists():
                 shutil.rmtree(unique_op_dir)
 
-            return str(output_video_path), f"Interpolation successful using {interpolation_method}. Generated {len(frame_tensors)} frames with optimal quality."
+            status_msg = f"Interpolation successful using {interpolation_method}. Generated {len(frame_tensors)} frames with optimal quality. Output resolution: {w}×{h}"
+            print(f"DEBUG: Returning status message: {status_msg}")
+            return str(output_video_path), status_msg
         except Exception as e:
             # Cleanup on error
             if unique_op_dir.exists():
