@@ -18,8 +18,46 @@ class ChainedInterpolator:
         self.image_interpolator = ImageInterpolator(model)
     
     def _extract_all_frames(self, video_path, output_dir):
-        """Extract all frames from a video to a directory."""
-        print(f"📸 Extracting frames from {Path(video_path).name}")
+        """Extract all frames from a video to a directory using color-safe conversion."""
+        print(f"📸 Extracting frames from {Path(video_path).name} with color-safe conversion")
+        
+        import subprocess
+        
+        # Get video info
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise Exception(f"Cannot open video: {video_path}")
+        
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        
+        # Extract frames using FFmpeg with color-safe conversion (Video → PNG)
+        ffmpeg_cmd = [
+            'ffmpeg', '-y',
+            '-i', str(video_path),
+            '-vf', 'scale=in_range=limited:out_range=full,format=rgb24',
+            '-color_range', 'pc',
+            str(output_dir / 'frame_%07d.png')
+        ]
+        
+        print(f"🎨 Using color-safe extraction: limited range → full range")
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"⚠️ FFmpeg extraction failed, falling back to OpenCV")
+            # Fallback to OpenCV extraction
+            return self._extract_all_frames_opencv_fallback(video_path, output_dir)
+        
+        # Collect extracted frames
+        frames = sorted(list(output_dir.glob("frame_*.png")))
+        
+        print(f"✅ Extracted {len(frames)} frames with proper color conversion")
+        return frames, fps
+    
+    def _extract_all_frames_opencv_fallback(self, video_path, output_dir):
+        """Fallback frame extraction using OpenCV (original method)."""
+        print(f"📸 Extracting frames from {Path(video_path).name} (OpenCV fallback)")
         
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
@@ -232,16 +270,21 @@ class ChainedInterpolator:
                 raise Exception("Could not read first frame")
             height, width = first_frame.shape[:2]
             
-            # Create video using ffmpeg
+            # Create video using ffmpeg with color-safe conversion (PNG → Video)
             ffmpeg_cmd = [
                 'ffmpeg', '-y',
+                '-color_range', '2',  # Specify input is full range (2 = pc/full)
                 '-r', str(final_fps),
                 '-i', str(all_frames_dir / 'frame_%07d.png'),
-                '-s', f'{width}x{height}',
+                '-vf', 'scale=in_color_matrix=bt709:out_color_matrix=bt709:in_range=full:out_range=limited,format=yuv420p',
                 '-c:v', 'libx264',
                 '-preset', 'veryfast',
                 '-crf', '18',
                 '-pix_fmt', 'yuv420p',
+                '-color_range', 'tv',
+                '-color_primaries', 'bt709',
+                '-color_trc', 'bt709',
+                '-colorspace', 'bt709',
                 '-movflags', '+faststart',
                 str(final_video_path)
             ]

@@ -167,19 +167,20 @@ class VideoInterpolator:
             
             ffmpeg_cmd = [
                 'ffmpeg', '-y',
+                '-color_range', '2',  # Specify input is full range (2 = pc/full)
                 '-r', str(final_fps),
-                '-i', frames_output_dir / 'frame_%07d.png',
-                '-s', f'{output_w}x{output_h}',
+                '-i', str(frames_output_dir / 'frame_%07d.png'),
+                '-vf', 'scale=in_color_matrix=bt709:out_color_matrix=bt709:in_range=full:out_range=limited,format=yuv420p',
                 '-c:v', 'libx264',
                 '-preset', 'slow',
                 '-crf', '18',
                 '-pix_fmt', 'yuv420p',
-                '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
+                '-color_range', 'tv',
                 '-color_primaries', 'bt709',
                 '-color_trc', 'bt709', 
                 '-colorspace', 'bt709',
                 '-movflags', '+faststart',
-                final_output_video_path
+                str(final_output_video_path)
             ]
             status_updates.append("Creating video from frames...")
             progress(1, desc="Assembling video")

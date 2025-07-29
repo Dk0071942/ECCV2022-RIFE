@@ -83,23 +83,24 @@ class ImageInterpolator:
                 frame_path = frames_dir / f'frame_{i:05d}.png'
                 save_tensor_as_image(frame_tensor, frame_path, original_size)
 
-            # Create video with proper BT.709 color space metadata
+            # Create video with proper color-safe conversion (PNG → Video)
             output_video_path = VIDEO_TMP_DIR / f"std_slomo_{timestamp}.mp4"
             ffmpeg_cmd = [
                 'ffmpeg', '-y',
+                '-color_range', '2',  # Specify input is full range (2 = pc/full)
                 '-r', str(fps),
-                '-i', frames_dir / 'frame_%05d.png',
-                '-s', f'{w}x{h}',
+                '-i', str(frames_dir / 'frame_%05d.png'),
+                '-vf', 'scale=in_color_matrix=bt709:out_color_matrix=bt709:in_range=full:out_range=limited,format=yuv420p',
                 '-c:v', 'libx264',
                 '-preset', 'veryfast',
                 '-crf', '18',
                 '-pix_fmt', 'yuv420p',
-                '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
+                '-color_range', 'tv',
                 '-color_primaries', 'bt709',
                 '-color_trc', 'bt709',
                 '-colorspace', 'bt709',
                 '-movflags', '+faststart',
-                output_video_path
+                str(output_video_path)
             ]
             
             success, msg = run_ffmpeg_command(ffmpeg_cmd, unique_op_dir)

@@ -42,9 +42,77 @@ def get_video_info(video_path: Path) -> Optional[dict]:
 def extract_frames(video_path: Path, start_frame: int, end_frame: int) -> Tuple[Optional[Image.Image], Optional[Image.Image]]:
     """Extracts start and end frames from a video and returns them as PIL images.
     
-    NOTE: This function now properly handles color space conversion to avoid color shifts.
-    OpenCV reads in BGR, we convert once to RGB for PIL, and maintain RGB throughout.
+    Uses FFmpeg for color-safe extraction to avoid color shifts:
+    - Converts from limited range (16-235) to full range (0-255)
+    - Preserves BT.709 color space
+    - Ensures proper color metadata handling
     """
+    import subprocess
+    import tempfile
+    
+    try:
+        # Create temporary directory for frames
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # Get video info for frame rate
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                return None, None
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            
+            # Extract start frame using FFmpeg with color-safe conversion
+            start_time = (start_frame - 1) / fps
+            start_output = temp_path / "start_frame.png"
+            
+            cmd_start = [
+                'ffmpeg', '-y',
+                '-ss', str(start_time),
+                '-i', str(video_path),
+                '-vf', 'scale=in_range=limited:out_range=full,format=rgb24',
+                '-color_range', 'pc',
+                '-frames:v', '1',
+                str(start_output)
+            ]
+            
+            result = subprocess.run(cmd_start, capture_output=True, text=True)
+            if result.returncode != 0 or not start_output.exists():
+                # Fallback to OpenCV if FFmpeg fails
+                return _extract_frames_opencv_fallback(video_path, start_frame, end_frame)
+            
+            # Extract end frame
+            end_time = (end_frame - 1) / fps
+            end_output = temp_path / "end_frame.png"
+            
+            cmd_end = [
+                'ffmpeg', '-y',
+                '-ss', str(end_time),
+                '-i', str(video_path),
+                '-vf', 'scale=in_range=limited:out_range=full,format=rgb24',
+                '-color_range', 'pc',
+                '-frames:v', '1',
+                str(end_output)
+            ]
+            
+            result = subprocess.run(cmd_end, capture_output=True, text=True)
+            if result.returncode != 0 or not end_output.exists():
+                # Fallback to OpenCV if FFmpeg fails
+                return _extract_frames_opencv_fallback(video_path, start_frame, end_frame)
+            
+            # Load frames as PIL images
+            pil_start_frame = Image.open(start_output) if start_output.exists() else None
+            pil_end_frame = Image.open(end_output) if end_output.exists() else None
+            
+            return pil_start_frame, pil_end_frame
+            
+    except Exception as e:
+        print(f"FFmpeg extraction failed: {e}, falling back to OpenCV")
+        return _extract_frames_opencv_fallback(video_path, start_frame, end_frame)
+
+
+def _extract_frames_opencv_fallback(video_path: Path, start_frame: int, end_frame: int) -> Tuple[Optional[Image.Image], Optional[Image.Image]]:
+    """Fallback frame extraction using OpenCV (original method)."""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         return None, None
@@ -72,7 +140,7 @@ def extract_frames(video_path: Path, start_frame: int, end_frame: int) -> Tuple[
 
 def extract_precise_boundary_frame(video_path: Path, position: str = 'last', validate_quality: bool = True) -> Optional[Image.Image]:
     """
-    Frame-perfect boundary extraction with quality validation.
+    Frame-perfect boundary extraction with quality validation and color-safe conversion.
     
     Args:
         video_path: Path to video file
@@ -80,8 +148,78 @@ def extract_precise_boundary_frame(video_path: Path, position: str = 'last', val
         validate_quality: Perform frame quality checks
     
     Returns:
-        PIL.Image: High-quality extracted frame with validation
+        PIL.Image: High-quality extracted frame with proper color conversion
     """
+    import subprocess
+    import tempfile
+    
+    try:
+        # Get video properties
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise Exception(f"Cannot open video: {video_path}")
+        
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        
+        if frame_count <= 0:
+            raise Exception(f"Invalid frame count: {frame_count}")
+        
+        # Calculate target frame
+        if position == 'last':
+            target_frame = frame_count - 1
+        elif position == 'first':
+            target_frame = 0
+        else:
+            raise Exception(f"Invalid position: {position}. Use 'first' or 'last'")
+        
+        # Create temporary directory for frame
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            output_path = temp_path / f"{position}_frame.png"
+            
+            # Calculate timestamp for seeking
+            timestamp = target_frame / fps
+            
+            # Extract frame using FFmpeg with color-safe conversion
+            cmd = [
+                'ffmpeg', '-y',
+                '-ss', str(timestamp),
+                '-i', str(video_path),
+                '-vf', 'scale=in_range=limited:out_range=full,format=rgb24',
+                '-color_range', 'pc',
+                '-frames:v', '1',
+                str(output_path)
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0 or not output_path.exists():
+                print(f"⚠️ FFmpeg extraction failed, using OpenCV fallback")
+                return _extract_precise_boundary_frame_opencv_fallback(video_path, position, validate_quality)
+            
+            # Load frame as PIL image
+            frame_pil = Image.open(output_path)
+            
+            # Optional quality validation
+            if validate_quality:
+                frame_array = np.array(frame_pil)
+                mean_brightness = np.mean(frame_array)
+                
+                if mean_brightness < 5:  # Likely black frame
+                    print(f"⚠️ Potential black frame detected (brightness: {mean_brightness:.1f})")
+                elif mean_brightness > 250:  # Likely white/overexposed frame  
+                    print(f"⚠️ Potential overexposed frame detected (brightness: {mean_brightness:.1f})")
+            
+            return frame_pil
+            
+    except Exception as e:
+        print(f"❌ FFmpeg frame extraction failed: {e}, using OpenCV fallback")
+        return _extract_precise_boundary_frame_opencv_fallback(video_path, position, validate_quality)
+
+
+def _extract_precise_boundary_frame_opencv_fallback(video_path: Path, position: str = 'last', validate_quality: bool = True) -> Optional[Image.Image]:
+    """Fallback boundary frame extraction using OpenCV (original method)."""
     try:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
@@ -259,6 +397,9 @@ def save_tensor_as_image(tensor: torch.Tensor, path: Path, original_size: Tuple[
     SYSTEMATIC FIX: Now handles centered padding coordinates for precise cropping.
     This ensures exact spatial alignment with FFmpeg-processed videos.
     
+    NOTE: Saves as PNG in full range (0-255) which is the standard for PNG files.
+    The color range conversion is handled by FFmpeg when creating the video.
+    
     Args:
         tensor: Padded tensor to crop and save
         path: Output file path
@@ -279,7 +420,10 @@ def save_tensor_as_image(tensor: torch.Tensor, path: Path, original_size: Tuple[
     # This eliminates spatial misalignment by cropping from exact original position
     img_to_save_cropped = img_to_save_permuted[pad_top:pad_top+h_orig, pad_left:pad_left+w_orig, :] 
     
+    # Save in full range (0-255) as is standard for PNG
     img_to_save_uint8 = (img_to_save_cropped * 255).clip(0, 255).astype(np.uint8)
-    # Convert RGB to BGR for cv2.imwrite
-    img_to_save_bgr = cv2.cvtColor(img_to_save_uint8, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(str(path), img_to_save_bgr) 
+    
+    # Save using PIL to ensure proper PNG encoding
+    from PIL import Image
+    img_pil = Image.fromarray(img_to_save_uint8)
+    img_pil.save(str(path), 'PNG', compress_level=0)  # Lossless PNG 

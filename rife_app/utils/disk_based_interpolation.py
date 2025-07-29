@@ -66,7 +66,7 @@ class DiskBasedInterpolator:
         self.memory_monitor = GPUMemoryMonitor(enable_logging=True)
         
     def _save_frame_to_disk(self, tensor: torch.Tensor, path: Path) -> bool:
-        """Save frame tensor to disk as PNG."""
+        """Save frame tensor to disk as PNG in full range."""
         try:
             # Convert tensor to numpy array
             if tensor.dim() == 4:  # Remove batch dimension if present
@@ -76,9 +76,10 @@ class DiskBasedInterpolator:
             frame_np = tensor.detach().cpu().numpy().transpose(1, 2, 0)
             frame_np = (frame_np * 255).astype(np.uint8)
             
-            # Save as PNG using PIL or OpenCV
-            import cv2
-            cv2.imwrite(str(path), cv2.cvtColor(frame_np, cv2.COLOR_RGB2BGR))
+            # Save as PNG using PIL to ensure consistent encoding
+            from PIL import Image
+            img_pil = Image.fromarray(frame_np)
+            img_pil.save(str(path), 'PNG', compress_level=0)  # Lossless PNG
             
             return True
         except Exception as e:
@@ -88,16 +89,20 @@ class DiskBasedInterpolator:
     def _load_frame_from_disk(self, path: Path) -> Optional[torch.Tensor]:
         """Load frame tensor from disk."""
         try:
-            import cv2
+            from PIL import Image
             
-            # Load image
-            frame_bgr = cv2.imread(str(path))
-            if frame_bgr is None:
+            # Load image using PIL
+            img_pil = Image.open(path)
+            if img_pil is None:
                 return None
+            
+            # Convert to RGB if needed (handles RGBA, grayscale, etc.)
+            if img_pil.mode != 'RGB':
+                img_pil = img_pil.convert('RGB')
                 
-            # Convert BGR to RGB and to tensor
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            tensor = torch.from_numpy(frame_rgb.transpose(2, 0, 1)).float() / 255.0
+            # Convert to numpy array and then to tensor
+            frame_np = np.array(img_pil)
+            tensor = torch.from_numpy(frame_np.transpose(2, 0, 1)).float() / 255.0
             tensor = tensor.unsqueeze(0).to(self.device)
             
             return tensor
@@ -330,22 +335,23 @@ class DiskBasedInterpolator:
                     dst_path = video_temp_path / f"frame_{i:06d}.png"
                     shutil.copy2(src_path, dst_path)
                 
-                # Create video with FFmpeg
+                # Create video with FFmpeg using color-safe conversion
                 ffmpeg_cmd = [
                     'ffmpeg', '-y',
+                    '-color_range', '2',  # Specify input is full range (2 = pc/full)
                     '-r', str(fps),
-                    '-i', video_temp_path / 'frame_%06d.png',
-                    '-s', f'{w}x{h}',
+                    '-i', str(video_temp_path / 'frame_%06d.png'),
+                    '-vf', 'scale=in_color_matrix=bt709:out_color_matrix=bt709:in_range=full:out_range=limited,format=yuv420p',
                     '-c:v', 'libx264',
                     '-preset', 'medium',
                     '-crf', '18',
                     '-pix_fmt', 'yuv420p',
-                    '-vf', 'format=yuv420p,colorspace=all=bt709:iall=bt709:itrc=bt709:fast=1',
+                    '-color_range', 'tv',
                     '-color_primaries', 'bt709',
                     '-color_trc', 'bt709',
                     '-colorspace', 'bt709',
                     '-movflags', '+faststart',
-                    output_video_path
+                    str(output_video_path)
                 ]
                 
                 success, msg = run_ffmpeg_command(ffmpeg_cmd, video_temp_path)
